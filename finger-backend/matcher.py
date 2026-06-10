@@ -2,9 +2,11 @@ import hashlib
 import re
 import time
 import secrets
-import json
+import logging
 
 import db
+
+log = logging.getLogger("finger-backend.matcher")
 
 
 # ----------------------------- Normalization -----------------------------
@@ -237,8 +239,8 @@ def contradiction_penalty(features, latest):
 
 
 def score_profile(features, profile):
-    stable  = json.loads(profile["stable_profile"])
-    network = json.loads(profile["network_profile"])
+    stable  = profile["stable_profile"]
+    network = profile["network_profile"]
     latest  = db.latest_visit(profile["browser_id"])
 
     w = WEIGHTS
@@ -262,7 +264,7 @@ def score_profile(features, profile):
         s += w["webgl_caps_hash"] * _eq(features.get("webgl_caps_hash"), latest["webgl_caps_hash"])
         s += w["webgl_ext_hash"]  * _eq(features.get("webgl_ext_hash"),  latest["webgl_ext_hash"])
 
-        latest_signals = json.loads(latest["raw_signals"]) if latest["raw_signals"] else {}
+        latest_signals = latest["raw_signals"] or {}
         s += w["font_jaccard"]  * jaccard(features.get("_font_set", set()),
                                           _csv_set(latest_signals.get("Detected Fonts")))
         s += w["voice_jaccard"] * jaccard(features.get("_voice_set", set()),
@@ -315,8 +317,8 @@ THRESHOLD_GRAY = 0.75
 
 
 def _gray_zone_anchor_ok(features, profile):
-    network = json.loads(profile["network_profile"])
-    stable  = json.loads(profile["stable_profile"])
+    network = profile["network_profile"]
+    stable  = profile["stable_profile"]
     if features.get("ip_subnet") and features["ip_subnet"] in network.get("recent_ip_subnets", []):
         return True
     if features.get("font_hash") and features["font_hash"] in stable.get("font_modes", []):
@@ -342,17 +344,27 @@ def match_or_create(signals, headers, ip):
     if best and best_score >= THRESHOLD_HIGH:
         browser_id = best["browser_id"]
         matched_id = browser_id
+        decision = "match"
         db.update_profile(browser_id, features, best_score)
     elif best and best_score >= THRESHOLD_GRAY and _gray_zone_anchor_ok(features, best):
         browser_id = best["browser_id"]
         matched_id = browser_id
+        decision = "gray-match"
         db.update_profile(browser_id, features, best_score)
     else:
         browser_id = "br_" + secrets.token_hex(8)
         db.create_profile(browser_id, features, 1.0 if not best else best_score)
         is_new = True
+        decision = "new"
 
     visit_id = db.insert_visit(browser_id, features, best_score, is_new, signals, headers)
+
+    log.info(
+        "decision=%s browser_id=%s score=%.3f candidates=%d ip=%s ja4=%s webgl=%s",
+        decision, browser_id, best_score, len(candidates),
+        features.get("ip_subnet"), features.get("ja4"),
+        (features.get("webgl_renderer") or "")[:40],
+    )
 
     return {
         "browser_id":       browser_id,

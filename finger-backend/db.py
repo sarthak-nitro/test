@@ -1,26 +1,35 @@
-import sqlite3
-import json
-import time
 import os
+import time
+import logging
 
-DB_PATH = os.environ.get("FINGERPRINT_DB", "fingerprints.db")
+from psycopg.rows import dict_row
+from psycopg.types.json import Jsonb
+from psycopg_pool import ConnectionPool
+
+log = logging.getLogger("finger-backend.db")
+
+# Peer auth via Unix socket as OS user `postgres`.
+# Equivalent to `sudo -u postgres psql -d fingerprints`.
+DATABASE_URL = os.environ.get(
+    "DATABASE_URL",
+    "postgresql://postgres@/fingerprints?host=/var/run/postgresql",
+)
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS browser_profiles (
   browser_id            TEXT PRIMARY KEY,
-  first_seen_at         INTEGER NOT NULL,
-  last_seen_at          INTEGER NOT NULL,
+  first_seen_at         BIGINT NOT NULL,
+  last_seen_at          BIGINT NOT NULL,
   visit_count           INTEGER NOT NULL DEFAULT 1,
-  current_confidence    REAL NOT NULL,
+  current_confidence    DOUBLE PRECISION NOT NULL,
   ja4                   TEXT,
   webgl_renderer        TEXT,
   font_hash             TEXT,
   voice_hash            TEXT,
-  stable_profile        TEXT NOT NULL,
-  semi_stable_profile   TEXT NOT NULL,
-  network_profile       TEXT NOT NULL
+  stable_profile        JSONB NOT NULL,
+  semi_stable_profile   JSONB NOT NULL,
+  network_profile       JSONB NOT NULL
 );
-
 CREATE INDEX IF NOT EXISTS idx_prof_ja4       ON browser_profiles(ja4);
 CREATE INDEX IF NOT EXISTS idx_prof_webgl     ON browser_profiles(webgl_renderer);
 CREATE INDEX IF NOT EXISTS idx_prof_font      ON browser_profiles(font_hash);
@@ -28,11 +37,11 @@ CREATE INDEX IF NOT EXISTS idx_prof_voice     ON browser_profiles(voice_hash);
 CREATE INDEX IF NOT EXISTS idx_prof_last_seen ON browser_profiles(last_seen_at);
 
 CREATE TABLE IF NOT EXISTS visits (
-  visit_id              INTEGER PRIMARY KEY AUTOINCREMENT,
-  browser_id            TEXT NOT NULL,
-  seen_at               INTEGER NOT NULL,
-  match_score           REAL,
-  is_new_browser        INTEGER NOT NULL,
+  visit_id              BIGSERIAL PRIMARY KEY,
+  browser_id            TEXT NOT NULL REFERENCES browser_profiles(browser_id),
+  seen_at               BIGINT NOT NULL,
+  match_score           DOUBLE PRECISION,
+  is_new_browser        SMALLINT NOT NULL,
   ja4                   TEXT,
   ja3_hash              TEXT,
   h2fp                  TEXT,
@@ -57,109 +66,112 @@ CREATE TABLE IF NOT EXISTS visits (
   timezone_offset       INTEGER,
   language              TEXT,
   max_touch_bucket      TEXT,
-  cookie_enabled        INTEGER,
-  reduced_motion        INTEGER,
+  cookie_enabled        SMALLINT,
+  reduced_motion        SMALLINT,
   color_depth           INTEGER,
-  pixel_ratio           REAL,
+  pixel_ratio           DOUBLE PRECISION,
   ip_raw                TEXT,
   ip_subnet             TEXT,
   ip_16_subnet          TEXT,
-  raw_signals           TEXT NOT NULL,
-  raw_headers           TEXT NOT NULL
+  raw_signals           JSONB NOT NULL,
+  raw_headers           JSONB NOT NULL
 );
-
 CREATE INDEX IF NOT EXISTS idx_visits_browser ON visits(browser_id);
 CREATE INDEX IF NOT EXISTS idx_visits_seen    ON visits(seen_at);
 """
 
-_conn = None
+_pool = None
 
 
-def get_conn():
-    global _conn
-    if _conn is None:
-        _conn = sqlite3.connect(DB_PATH, check_same_thread=False)
-        _conn.row_factory = sqlite3.Row
-        _conn.executescript(SCHEMA)
-        _conn.commit()
-    return _conn
+def _pool_handle():
+    global _pool
+    if _pool is None:
+        log.info("opening connection pool to %s", DATABASE_URL.split("@", 1)[-1])
+        _pool = ConnectionPool(
+            DATABASE_URL,
+            min_size=1,
+            max_size=8,
+            kwargs={"row_factory": dict_row, "autocommit": True},
+        )
+        with _pool.connection() as conn:
+            conn.execute(SCHEMA)
+        log.info("schema bootstrap complete")
+    return _pool
 
 
 def fetch_candidates(features, lookback_days=90):
-    conn = get_conn()
     cutoff = int(time.time()) - lookback_days * 86400
-    rows = conn.execute(
-        """
-        SELECT * FROM browser_profiles
-         WHERE last_seen_at > ?
-           AND (ja4 = ? OR webgl_renderer = ? OR font_hash = ? OR voice_hash = ?)
-        """,
-        (
-            cutoff,
-            features.get("ja4"),
-            features.get("webgl_renderer"),
-            features.get("font_hash"),
-            features.get("voice_hash"),
-        ),
-    ).fetchall()
-    return [dict(r) for r in rows]
+    with _pool_handle().connection() as conn:
+        return conn.execute(
+            """
+            SELECT * FROM browser_profiles
+             WHERE last_seen_at > %s
+               AND (ja4 = %s OR webgl_renderer = %s OR font_hash = %s OR voice_hash = %s)
+            """,
+            (
+                cutoff,
+                features.get("ja4"),
+                features.get("webgl_renderer"),
+                features.get("font_hash"),
+                features.get("voice_hash"),
+            ),
+        ).fetchall()
 
 
 def latest_visit(browser_id):
-    row = get_conn().execute(
-        "SELECT * FROM visits WHERE browser_id = ? ORDER BY visit_id DESC LIMIT 1",
-        (browser_id,),
-    ).fetchone()
-    return dict(row) if row else None
+    with _pool_handle().connection() as conn:
+        return conn.execute(
+            "SELECT * FROM visits WHERE browser_id = %s ORDER BY visit_id DESC LIMIT 1",
+            (browser_id,),
+        ).fetchone()
 
 
 def insert_visit(browser_id, features, match_score, is_new, raw_signals, raw_headers):
-    conn = get_conn()
-    cur = conn.execute(
-        """
-        INSERT INTO visits (
-          browser_id, seen_at, match_score, is_new_browser,
-          ja4, ja3_hash, h2fp,
-          ua_family, ua_major, platform, vendor,
-          webgl_renderer, webgl_vendor, webgl_render, webgl_ext_hash, webgl_caps_hash,
-          font_hash, voice_hash, voice_count,
-          audio_hash, css_supports_hash, constructor_count, event_handler_count,
-          intl_hash, timezone, timezone_offset, language,
-          max_touch_bucket, cookie_enabled, reduced_motion,
-          color_depth, pixel_ratio,
-          ip_raw, ip_subnet, ip_16_subnet,
-          raw_signals, raw_headers
-        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-        """,
-        (
-            browser_id, int(time.time()), match_score, 1 if is_new else 0,
-            features.get("ja4"), features.get("ja3_hash"), features.get("h2fp"),
-            features.get("ua_family"), features.get("ua_major"),
-            features.get("platform"), features.get("vendor"),
-            features.get("webgl_renderer"), features.get("webgl_vendor"),
-            features.get("webgl_render"), features.get("webgl_ext_hash"),
-            features.get("webgl_caps_hash"),
-            features.get("font_hash"), features.get("voice_hash"),
-            features.get("voice_count"),
-            features.get("audio_hash"), features.get("css_supports_hash"),
-            features.get("constructor_count"), features.get("event_handler_count"),
-            features.get("intl_hash"), features.get("timezone"),
-            features.get("timezone_offset"), features.get("language"),
-            features.get("max_touch_bucket"),
-            1 if features.get("cookie_enabled") else 0,
-            1 if features.get("reduced_motion") else 0,
-            features.get("color_depth"), features.get("pixel_ratio"),
-            features.get("ip_raw"), features.get("ip_subnet"),
-            features.get("ip_16_subnet"),
-            json.dumps(raw_signals), json.dumps(raw_headers),
-        ),
-    )
-    conn.commit()
-    return cur.lastrowid
+    with _pool_handle().connection() as conn:
+        row = conn.execute(
+            """
+            INSERT INTO visits (
+              browser_id, seen_at, match_score, is_new_browser,
+              ja4, ja3_hash, h2fp,
+              ua_family, ua_major, platform, vendor,
+              webgl_renderer, webgl_vendor, webgl_render, webgl_ext_hash, webgl_caps_hash,
+              font_hash, voice_hash, voice_count,
+              audio_hash, css_supports_hash, constructor_count, event_handler_count,
+              intl_hash, timezone, timezone_offset, language,
+              max_touch_bucket, cookie_enabled, reduced_motion,
+              color_depth, pixel_ratio,
+              ip_raw, ip_subnet, ip_16_subnet,
+              raw_signals, raw_headers
+            ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+            RETURNING visit_id
+            """,
+            (
+                browser_id, int(time.time()), match_score, 1 if is_new else 0,
+                features.get("ja4"), features.get("ja3_hash"), features.get("h2fp"),
+                features.get("ua_family"), features.get("ua_major"),
+                features.get("platform"), features.get("vendor"),
+                features.get("webgl_renderer"), features.get("webgl_vendor"),
+                features.get("webgl_render"), features.get("webgl_ext_hash"),
+                features.get("webgl_caps_hash"),
+                features.get("font_hash"), features.get("voice_hash"),
+                features.get("voice_count"),
+                features.get("audio_hash"), features.get("css_supports_hash"),
+                features.get("constructor_count"), features.get("event_handler_count"),
+                features.get("intl_hash"), features.get("timezone"),
+                features.get("timezone_offset"), features.get("language"),
+                features.get("max_touch_bucket"),
+                1 if features.get("cookie_enabled") else 0,
+                1 if features.get("reduced_motion") else 0,
+                features.get("color_depth"), features.get("pixel_ratio"),
+                features.get("ip_raw"), features.get("ip_subnet"),
+                features.get("ip_16_subnet"),
+                Jsonb(raw_signals), Jsonb(raw_headers),
+            ),
+        ).fetchone()
+        return row["visit_id"]
 
 
 def create_profile(browser_id, features, score):
-    conn = get_conn()
     now = int(time.time())
     stable = {
         "ja4_modes":   [features["ja4"]]            if features.get("ja4") else [],
@@ -177,34 +189,37 @@ def create_profile(browser_id, features, score):
         "recent_ip_subnets": [features["ip_subnet"]]    if features.get("ip_subnet") else [],
         "recent_ip_16":      [features["ip_16_subnet"]] if features.get("ip_16_subnet") else [],
     }
-    conn.execute(
-        """
-        INSERT INTO browser_profiles (
-          browser_id, first_seen_at, last_seen_at, visit_count, current_confidence,
-          ja4, webgl_renderer, font_hash, voice_hash,
-          stable_profile, semi_stable_profile, network_profile
-        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
-        """,
-        (
-            browser_id, now, now, 1, score,
-            features.get("ja4"), features.get("webgl_renderer"),
-            features.get("font_hash"), features.get("voice_hash"),
-            json.dumps(stable), json.dumps(semi), json.dumps(network),
-        ),
-    )
-    conn.commit()
+    with _pool_handle().connection() as conn:
+        conn.execute(
+            """
+            INSERT INTO browser_profiles (
+              browser_id, first_seen_at, last_seen_at, visit_count, current_confidence,
+              ja4, webgl_renderer, font_hash, voice_hash,
+              stable_profile, semi_stable_profile, network_profile
+            ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+            """,
+            (
+                browser_id, now, now, 1, score,
+                features.get("ja4"), features.get("webgl_renderer"),
+                features.get("font_hash"), features.get("voice_hash"),
+                Jsonb(stable), Jsonb(semi), Jsonb(network),
+            ),
+        )
 
 
 def update_profile(browser_id, features, score):
-    conn = get_conn()
-    row = conn.execute(
-        "SELECT * FROM browser_profiles WHERE browser_id = ?", (browser_id,)
-    ).fetchone()
+    pool = _pool_handle()
+    with pool.connection() as conn:
+        row = conn.execute(
+            "SELECT * FROM browser_profiles WHERE browser_id = %s",
+            (browser_id,),
+        ).fetchone()
     if not row:
         return
-    stable  = json.loads(row["stable_profile"])
-    semi    = json.loads(row["semi_stable_profile"])
-    network = json.loads(row["network_profile"])
+
+    stable  = row["stable_profile"]
+    semi    = row["semi_stable_profile"]
+    network = row["network_profile"]
 
     def push(lst, val, max_len=10):
         if val is None or val == "":
@@ -229,27 +244,27 @@ def update_profile(browser_id, features, score):
     old_conf = row["current_confidence"] or 0.0
     new_conf = 0.7 * old_conf + 0.3 * score
 
-    conn.execute(
-        """
-        UPDATE browser_profiles SET
-          last_seen_at        = ?,
-          visit_count         = visit_count + 1,
-          current_confidence  = ?,
-          ja4                 = COALESCE(?, ja4),
-          webgl_renderer      = COALESCE(?, webgl_renderer),
-          font_hash           = COALESCE(?, font_hash),
-          voice_hash          = COALESCE(?, voice_hash),
-          stable_profile      = ?,
-          semi_stable_profile = ?,
-          network_profile     = ?
-        WHERE browser_id = ?
-        """,
-        (
-            int(time.time()), new_conf,
-            features.get("ja4"), features.get("webgl_renderer"),
-            features.get("font_hash"), features.get("voice_hash"),
-            json.dumps(stable), json.dumps(semi), json.dumps(network),
-            browser_id,
-        ),
-    )
-    conn.commit()
+    with pool.connection() as conn:
+        conn.execute(
+            """
+            UPDATE browser_profiles SET
+              last_seen_at        = %s,
+              visit_count         = visit_count + 1,
+              current_confidence  = %s,
+              ja4                 = COALESCE(%s, ja4),
+              webgl_renderer      = COALESCE(%s, webgl_renderer),
+              font_hash           = COALESCE(%s, font_hash),
+              voice_hash          = COALESCE(%s, voice_hash),
+              stable_profile      = %s,
+              semi_stable_profile = %s,
+              network_profile     = %s
+            WHERE browser_id = %s
+            """,
+            (
+                int(time.time()), new_conf,
+                features.get("ja4"), features.get("webgl_renderer"),
+                features.get("font_hash"), features.get("voice_hash"),
+                Jsonb(stable), Jsonb(semi), Jsonb(network),
+                browser_id,
+            ),
+        )

@@ -1,7 +1,17 @@
 from http.server import BaseHTTPRequestHandler, HTTPServer
 import json
+import logging
+import os
+import traceback
 
 from matcher import match_or_create
+
+LOG_LEVEL = os.environ.get("LOG_LEVEL", "INFO").upper()
+logging.basicConfig(
+    level=LOG_LEVEL,
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+)
+log = logging.getLogger("finger-backend.http")
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -45,10 +55,18 @@ class Handler(BaseHTTPRequestHandler):
                 or self.client_address[0]
             )
 
+            log.info(
+                "POST /collect ip=%s ua=%s signals=%d",
+                ip,
+                (headers.get("user-agent") or headers.get("User-Agent") or "")[:60],
+                len(signals),
+            )
+
             try:
                 result = match_or_create(signals, headers, ip)
                 status = 200
             except Exception as e:
+                log.error("match_or_create failed: %s\n%s", e, traceback.format_exc())
                 result = {"error": str(e)}
                 status = 500
 
@@ -67,5 +85,6 @@ class Handler(BaseHTTPRequestHandler):
 
 
 if __name__ == "__main__":
-    print("finger-backend listening on :5000")
-    HTTPServer(("0.0.0.0", 5000), Handler).serve_forever()
+    port = int(os.environ.get("PORT", 5000))
+    log.info("finger-backend listening on :%d", port)
+    HTTPServer(("0.0.0.0", port), Handler).serve_forever()
