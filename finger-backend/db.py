@@ -10,7 +10,7 @@ log = logging.getLogger("finger-backend.db")
 
 DATABASE_URL = os.environ.get(
     "DATABASE_URL",
-    "postgresql://finger@localhost/fingerprints",
+    "postgresql://postgres@localhost/postgres",
 )
 
 SCHEMA = """
