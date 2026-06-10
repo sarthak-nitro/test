@@ -328,12 +328,27 @@ def _gray_zone_anchor_ok(features, profile):
 
 def match_or_create(signals, headers, ip):
     features = normalize(signals, headers, ip)
+    log.debug(
+        "normalized: ja4=%s h2fp=%s ua=%s/%s platform=%s webgl=%s font_hash=%s voice_hash=%s ip=%s",
+        features.get("ja4"), features.get("h2fp"),
+        features.get("ua_family"), features.get("ua_major"),
+        features.get("platform"), (features.get("webgl_renderer") or "")[:60],
+        features.get("font_hash"), features.get("voice_hash"),
+        features.get("ip_subnet"),
+    )
+
     candidates = db.fetch_candidates(features)
+    log.info("candidates=%d for ja4=%s webgl=%s font=%s voice=%s",
+             len(candidates), features.get("ja4"),
+             (features.get("webgl_renderer") or "")[:40],
+             features.get("font_hash"), features.get("voice_hash"))
 
     best = None
     best_score = 0.0
     for c in candidates:
         s = score_profile(features, c)
+        log.debug("candidate=%s score=%.3f visits=%s last_seen=%s",
+                  c["browser_id"], s, c.get("visit_count"), c.get("last_seen_at"))
         if s > best_score:
             best_score = s
             best = c
