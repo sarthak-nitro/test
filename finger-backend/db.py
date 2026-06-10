@@ -56,6 +56,7 @@ CREATE TABLE IF NOT EXISTS visits (
   voice_hash            TEXT,
   voice_count           INTEGER,
   audio_hash            TEXT,
+  canvas_hash           TEXT,
   css_supports_hash     TEXT,
   constructor_count     INTEGER,
   event_handler_count   INTEGER,
@@ -134,13 +135,13 @@ def insert_visit(browser_id, features, match_score, is_new, raw_signals, raw_hea
               ua_family, ua_major, platform, vendor,
               webgl_renderer, webgl_vendor, webgl_render, webgl_ext_hash, webgl_caps_hash,
               font_hash, voice_hash, voice_count,
-              audio_hash, css_supports_hash, constructor_count, event_handler_count,
+              audio_hash, canvas_hash, css_supports_hash, constructor_count, event_handler_count,
               intl_hash, timezone, timezone_offset, language,
               max_touch_bucket, cookie_enabled, reduced_motion,
               color_depth, pixel_ratio,
               ip_raw, ip_subnet, ip_16_subnet,
               raw_signals, raw_headers
-            ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+            ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
             RETURNING visit_id
             """,
             (
@@ -153,7 +154,8 @@ def insert_visit(browser_id, features, match_score, is_new, raw_signals, raw_hea
                 features.get("webgl_caps_hash"),
                 features.get("font_hash"), features.get("voice_hash"),
                 features.get("voice_count"),
-                features.get("audio_hash"), features.get("css_supports_hash"),
+                features.get("audio_hash"), features.get("canvas_hash"),
+                features.get("css_supports_hash"),
                 features.get("constructor_count"), features.get("event_handler_count"),
                 features.get("intl_hash"), features.get("timezone"),
                 features.get("timezone_offset"), features.get("language"),

@@ -126,7 +126,8 @@ def normalize(signals, headers, ip):
         "color_depth":      signals.get("Color Depth"),
         "pixel_ratio":      round(float(signals.get("Pixel Ratio") or 0), 1) or None,
         # noisy
-        "audio_hash": signals.get("Audio"),
+        "audio_hash":  signals.get("Audio"),
+        "canvas_hash": signals.get("Canvas"),
         # network context
         "ip_raw":       ip,
         "ip_subnet":    sub24,
@@ -140,18 +141,18 @@ def normalize(signals, headers, ip):
 # ----------------------------- Scoring -----------------------------
 
 WEIGHTS = {
-    "ja4":             0.11,
-    "h2fp":            0.07,
-    "webgl_renderer":  0.10,
+    "ja4":             0.08,
+    "h2fp":            0.05,
+    "webgl_renderer":  0.08,
     "webgl_vendor":    0.03,
-    "webgl_render":    0.05,
-    "webgl_caps_hash": 0.05,
+    "webgl_render":    0.10,
+    "webgl_caps_hash": 0.03,
     "webgl_ext_hash":  0.02,
-    "font_jaccard":    0.10,
-    "voice_jaccard":   0.08,
+    "font_jaccard":    0.08,
+    "voice_jaccard":   0.06,
     "voice_count":     0.02,
-    "ua":              0.06,
-    "version_combo":   0.04,
+    "ua":              0.04,
+    "version_combo":   0.03,
     "platform":        0.02,
     "vendor":          0.01,
     "timezone":        0.02,
@@ -162,9 +163,10 @@ WEIGHTS = {
     "motion":          0.01,
     "color_depth":     0.005,
     "pixel_ratio":     0.005,
-    "audio":           0.05,
-    "ip_24":           0.06,
-    "ip_16":           0.04,
+    "audio":           0.10,
+    "canvas":          0.08,
+    "ip_24":           0.05,
+    "ip_16":           0.03,
 }
 
 
@@ -235,6 +237,11 @@ def contradiction_penalty(features, latest):
     if new_plat and old_plat and new_plat != old_plat:
         penalty -= 0.30
 
+    new_canvas = features.get("canvas_hash")
+    old_canvas = latest.get("canvas_hash")
+    if new_canvas and old_canvas and new_canvas != old_canvas:
+        penalty -= 0.15
+
     return penalty
 
 
@@ -300,6 +307,7 @@ def score_profile(features, profile):
         s += w["color_depth"] * _eq(features.get("color_depth"), latest["color_depth"])
         s += w["pixel_ratio"] * _eq(features.get("pixel_ratio"), latest["pixel_ratio"])
         s += w["audio"]       * _eq(features.get("audio_hash"),  latest["audio_hash"])
+        s += w["canvas"]      * _eq(features.get("canvas_hash"), latest.get("canvas_hash"))
 
     s += w["ip_24"] * (1.0 if features.get("ip_subnet")    in network.get("recent_ip_subnets", []) else 0.0)
     s += w["ip_16"] * (1.0 if features.get("ip_16_subnet") in network.get("recent_ip_16", [])      else 0.0)
@@ -312,7 +320,7 @@ def score_profile(features, profile):
 
 # ----------------------------- Match entry point -----------------------------
 
-THRESHOLD_HIGH = 0.90
+THRESHOLD_HIGH = 0.93
 THRESHOLD_GRAY = 0.75
 
 

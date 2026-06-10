@@ -135,14 +135,26 @@ export function getWebGLFingerprint() {
     try {
         const canvas = document.createElement('canvas');
         const gl = canvas.getContext('webgl') || canvas.getContext('experimental-webgl');
+        if (!gl) {
+            return { vendor: 'n/a', renderer: 'n/a', extensions: 'n/a', maxTextureSize: 'n/a', maxRenderbufferSize: 'n/a', maxViewportDims: 'n/a', maxVertexAttribs: 'n/a', maxVertexUniformVectors: 'n/a', maxFragmentUniformVectors: 'n/a', maxCombinedTextureUnits: 'n/a' };
+        }
+        // In Firefox strict / privacy.resistFingerprinting, the privileged extension is null.
+        // Fall back to non-privileged getParameter so the fields still have *some* value
+        // (generic "Mozilla" strings) rather than 'n/a' everywhere.
         const debugInfo = gl.getExtension('WEBGL_debug_renderer_info');
+        const vendor = debugInfo
+            ? gl.getParameter(debugInfo.UNMASKED_VENDOR_WEBGL)
+            : gl.getParameter(gl.VENDOR);
+        const renderer = debugInfo
+            ? gl.getParameter(debugInfo.UNMASKED_RENDERER_WEBGL)
+            : gl.getParameter(gl.RENDERER);
         return {
-            vendor: gl.getParameter(debugInfo.UNMASKED_VENDOR_WEBGL),
-            renderer: gl.getParameter(debugInfo.UNMASKED_RENDERER_WEBGL),
-            extensions: gl.getSupportedExtensions().join(', '),
+            vendor: vendor || 'n/a',
+            renderer: renderer || 'n/a',
+            extensions: (gl.getSupportedExtensions() || []).join(', ') || 'n/a',
             maxTextureSize: gl.getParameter(gl.MAX_TEXTURE_SIZE),
             maxRenderbufferSize: gl.getParameter(gl.MAX_RENDERBUFFER_SIZE),
-            maxViewportDims: gl.getParameter(gl.MAX_VIEWPORT_DIMS).join('x'),
+            maxViewportDims: (gl.getParameter(gl.MAX_VIEWPORT_DIMS) || []).join('x') || 'n/a',
             maxVertexAttribs: gl.getParameter(gl.MAX_VERTEX_ATTRIBS),
             maxVertexUniformVectors: gl.getParameter(gl.MAX_VERTEX_UNIFORM_VECTORS),
             maxFragmentUniformVectors: gl.getParameter(gl.MAX_FRAGMENT_UNIFORM_VECTORS),

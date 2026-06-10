@@ -39,6 +39,9 @@ export async function getFingerprint() {
     // Fonts
     signals['Detected Fonts'] = getDetectedFonts().join(', ');
 
+    // Canvas (GPU pixel-level fingerprint)
+    signals['Canvas'] = getCanvasFingerprint();
+
     // Audio
     signals['Audio'] = await getAudioFingerprint();
 
@@ -54,10 +57,17 @@ export async function getFingerprint() {
     signals['Intl Fingerprint'] = getIntlFingerprint();
 
     // Speech Voices
+    // Some Firefox configs return [] and never fire onvoiceschanged — add 1.5s timeout
+    // so the script never hangs.
     const voices = await new Promise((resolve) => {
-        const v = speechSynthesis.getVoices();
-        if (v.length > 0) return resolve(v);
-        speechSynthesis.onvoiceschanged = () => resolve(speechSynthesis.getVoices());
+        let done = false;
+        const finish = (v) => { if (!done) { done = true; resolve(v || []); } };
+        try {
+            const v = speechSynthesis.getVoices();
+            if (v && v.length > 0) return finish(v);
+            speechSynthesis.onvoiceschanged = () => finish(speechSynthesis.getVoices());
+        } catch (e) { /* speechSynthesis unavailable */ }
+        setTimeout(() => finish(speechSynthesis.getVoices && speechSynthesis.getVoices()), 1500);
     });
     signals['Speech Voices'] = voices.map(v => v.name + ':' + v.lang).join(', ');
     signals['Speech Voices Count'] = voices.length;
@@ -108,35 +118,60 @@ export async function getFingerprint() {
     try {
         const result = await getFingerprint();
 
-        let visitorId = localStorage.getItem('visitor_id');
-        if (!visitorId) {
+        // visitor_id: wrap in own try/catch — localStorage throws in some private/strict modes.
+        // Falling back to an ephemeral id keeps the POST alive.
+        let visitorId = null;
+        try {
+            visitorId = localStorage.getItem('visitor_id');
+            if (!visitorId) {
+                visitorId = Date.now().toString(36) + Math.random().toString(36).substring(2, 12);
+                localStorage.setItem('visitor_id', visitorId);
+            }
+        } catch (e) {
             visitorId = Date.now().toString(36) + Math.random().toString(36).substring(2, 12);
-            localStorage.setItem('visitor_id', visitorId);
         }
-        
-        await fetch("https://client-app.getnitro.co.in/collect", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-                visitor_id: visitorId,
-                fingerprint: result.fingerprint,
-                timestamp: Date.now(),
-                url: window.location.href,
-                hostname: window.location.hostname,
-                path: window.location.pathname,
-                referrer: document.referrer,
-                signals: result.signals,
-                entitySession: result.entitySession,
-                h2fp: result.h2fp,
-                ja3: result.ja3,
-                ja3Hash: result.ja3Hash,
-                ja4: result.ja4,
-                realIP: result.realIP,
-                requestID: result.requestID
-            }),
-            keepalive: true
+
+        const url = "https://client-app.getnitro.co.in/collect";
+        const payload = JSON.stringify({
+            visitor_id: visitorId,
+            fingerprint: result.fingerprint,
+            timestamp: Date.now(),
+            url: window.location.href,
+            hostname: window.location.hostname,
+            path: window.location.pathname,
+            referrer: document.referrer,
+            signals: result.signals,
+            entitySession: result.entitySession,
+            h2fp: result.h2fp,
+            ja3: result.ja3,
+            ja3Hash: result.ja3Hash,
+            ja4: result.ja4,
+            realIP: result.realIP,
+            requestID: result.requestID
         });
-    } catch (e) {"Error",console.log(e)}
+
+        // Primary: sendBeacon with a plain string. text/plain;charset=UTF-8 is a "simple"
+        // CORS request — no preflight OPTIONS — which most strict-privacy browsers and
+        // ad-blockers will let through. Fire-and-forget; survives page unload.
+        let sent = false;
+        if (typeof navigator.sendBeacon === 'function') {
+            try { sent = navigator.sendBeacon(url, payload); } catch (e) { sent = false; }
+        }
+
+        // Fallback: fetch with keepalive, also text/plain to avoid preflight.
+        if (!sent) {
+            try {
+                fetch(url, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'text/plain' },
+                    body: payload,
+                    keepalive: true
+                }).catch(function () { });
+            } catch (e) { }
+        }
+    } catch (e) {
+        try { console.log('[NitroFingerprint]', e); } catch (_) { }
+    }
 })();
 
 // Also export individual functions for advanced users
