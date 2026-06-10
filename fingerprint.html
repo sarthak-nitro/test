@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Custom Browser Fingerprint</title>
+    <style>
+        body { font-family: monospace; background: #1a1a2e; color: #0ff; padding: 20px; }
+        h1 { color: #e94560; }
+        .signal { background: #16213e; padding: 10px; margin: 8px 0; border-left: 3px solid #0ff; }
+        .label { color: #e94560; font-weight: bold; }
+        .value { color: #0f0; word-break: break-all; }
+        #final { background: #e94560; color: #fff; padding: 15px; margin-top: 20px; font-size: 1.2em; }
+    </style>
+    <script src="https://cdn.jsdelivr.net/npm/nitro-fingerprint-dev@latest/dist/index.global.js"></script>
+</head>
+<body>
+    <h1>Custom Browser Fingerprint</h1>
+    <div id="signals"></div>
+    <div id="final"></div>
+
+    <script>
+        // --- 1. cyrb53 hash (same as broprint.js) ---
+        function cyrb53(str, seed = 0) {
+            let h1 = 0xdeadbeef ^ seed, h2 = 0x41c6ce57 ^ seed;
+            for (let i = 0; i < str.length; i++) {
+                let ch = str.charCodeAt(i);
+                h1 = Math.imul(h1 ^ ch, 2654435761);
+                h2 = Math.imul(h2 ^ ch, 1597334677);
+            }
+            h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507);
+            h1 ^= Math.imul(h2 ^ (h2 >>> 13), 3266489909);
+            h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507);
+            h2 ^= Math.imul(h1 ^ (h1 >>> 13), 3266489909);
+            return 4294967296 * (2097151 & h2) + (h1 >>> 0);
+        }
+
+        // --- 2. Canvas fingerprint ---
+        function getCanvasFingerprint() {
+            try {
+                const canvas = document.createElement('canvas');
+                canvas.width = 200;
+                canvas.height = 50;
+                const ctx = canvas.getContext('2d');
+
+                ctx.textBaseline = 'top';
+                ctx.font = '14px Arial';
+                ctx.fillStyle = '#f60';
+                ctx.fillRect(0, 0, 200, 50);
+
+                ctx.fillStyle = '#069';
+                ctx.fillText('BrowserFingerprint!', 2, 15);
+
+                ctx.fillStyle = 'rgba(102, 204, 0, 0.7)';
+                ctx.fillText('CustomSignal123', 4, 30);
+
+                ctx.beginPath();
+                ctx.arc(50, 25, 10, 0, Math.PI * 2);
+                ctx.fillStyle = '#ff0080';
+                ctx.fill();
+
+                return canvas.toDataURL();
+            } catch (e) {
+                return 'canvas-not-supported';
+            }
+        }
+
+        // --- 3. Audio fingerprint ---
+        async function getAudioFingerprint() {
+            try {
+                const ctx = new OfflineAudioContext(1, 500, 44100);
+                const oscillator = ctx.createOscillator();
+                oscillator.type = 'triangle';
+                oscillator.frequency.setValueAtTime(10000, ctx.currentTime);
+
+                const compressor = ctx.createDynamicsCompressor();
+                compressor.threshold.setValueAtTime(-50, ctx.currentTime);
+                compressor.knee.setValueAtTime(40, ctx.currentTime);
+                compressor.ratio.setValueAtTime(12, ctx.currentTime);
+                compressor.attack.setValueAtTime(0, ctx.currentTime);
+                compressor.release.setValueAtTime(0.25, ctx.currentTime);
+
+                oscillator.connect(compressor);
+                compressor.connect(ctx.destination);
+                oscillator.start(0);
+
+                const buffer = await ctx.startRendering();
+                const data = buffer.getChannelData(0);
+                let sum = 0;
+                for (let i = 4500; i < 5000; i++) {
+                    sum += Math.abs(data[i]);
+                }
+                return sum.toString();
+            } catch (e) {
+                return 'audio-not-supported';
+            }
+        }
+
+        // --- 4. WebGL fingerprint ---
+        function getWebGLFingerprint() {
+            try {
+                const canvas = document.createElement('canvas');
+                const gl = canvas.getContext('webgl') || canvas.getContext('experimental-webgl');
+                const debugInfo = gl.getExtension('WEBGL_debug_renderer_info');
+                return {
+                    vendor: gl.getParameter(debugInfo.UNMASKED_VENDOR_WEBGL),
+                    renderer: gl.getParameter(debugInfo.UNMASKED_RENDERER_WEBGL)
+                };
+            } catch (e) {
+                return { vendor: 'n/a', renderer: 'n/a' };
+            }
+        }
+
+        // --- 5. Font detection ---
+        function getDetectedFonts() {
+            const testFonts = [
+                'Arial', 'Courier New', 'Georgia', 'Helvetica', 'Times New Roman',
+                'Verdana', 'Comic Sans MS', 'Impact', 'Trebuchet MS', 'Palatino',
+                'Lucida Console', 'Tahoma', 'Monaco', 'Menlo', 'Consolas'
+            ];
+            const baseFonts = ['monospace', 'sans-serif', 'serif'];
+            const testStr = 'mmmmmmmmmmlli';
+            const testSize = '72px';
+            const canvas = document.createElement('canvas');
+            const ctx = canvas.getContext('2d');
+
+            function getWidth(font) {
+                ctx.font = testSize + ' ' + font;
+                return ctx.measureText(testStr).width;
+            }
+
+            const baseWidths = baseFonts.map(f => getWidth(f));
+            const detected = [];
+
+            for (const font of testFonts) {
+                for (let i = 0; i < baseFonts.length; i++) {
+                    if (getWidth(font + ',' + baseFonts[i]) !== baseWidths[i]) {
+                        detected.push(font);
+                        break;
+                    }
+                }
+            }
+            return detected;
+        }
+
+        // --- 6. Collect all signals ---
+        async function collectFingerprint() {
+            const signals = {};
+
+            // Navigator properties
+            signals['User-Agent'] = navigator.userAgent;
+            signals['Platform'] = navigator.platform;
+            signals['Language'] = navigator.language;
+            signals['CPU Cores'] = navigator.hardwareConcurrency;
+            signals['Device Memory'] = navigator.deviceMemory || 'n/a';
+            signals['Max Touch Points'] = navigator.maxTouchPoints;
+            signals['Do Not Track'] = navigator.doNotTrack || 'n/a';
+            signals['Cookie Enabled'] = navigator.cookieEnabled;
+
+            // Screen
+            signals['Screen Resolution'] = screen.width + 'x' + screen.height;
+            signals['Color Depth'] = screen.colorDepth;
+            signals['Pixel Ratio'] = window.devicePixelRatio;
+            signals['Available Screen'] = screen.availWidth + 'x' + screen.availHeight;
+
+            // Timezone
+            signals['Timezone'] = Intl.DateTimeFormat().resolvedOptions().timeZone;
+            signals['Timezone Offset'] = new Date().getTimezoneOffset();
+
+            // WebGL
+            const webgl = getWebGLFingerprint();
+            signals['WebGL Vendor'] = webgl.vendor;
+            signals['WebGL Renderer'] = webgl.renderer;
+
+            // Fonts
+            signals['Detected Fonts'] = getDetectedFonts().join(', ');
+
+            // Canvas
+            signals['Canvas'] = getCanvasFingerprint().substring(0, 80) + '...';
+
+            // Audio
+            signals['Audio'] = await getAudioFingerprint();
+
+            // Display signals
+            const container = document.getElementById('signals');
+            let rawString = '';
+
+            for (const [label, value] of Object.entries(signals)) {
+                const div = document.createElement('div');
+                div.className = 'signal';
+                div.innerHTML = `<span class="label">${label}:</span> <span class="value">${value}</span>`;
+                container.appendChild(div);
+                rawString += label + ':' + value + '|';
+            }
+
+            // Generate final hash
+            const hash = cyrb53(rawString);
+            document.getElementById('final').innerHTML =
+                '&#x1f9ec; FINAL FINGERPRINT: <strong>' + hash + '</strong>';
+
+            console.log('All signals:', signals);
+            console.log('Final fingerprint:', hash);
+        }
+
+        collectFingerprint();
+    </script>
+</body>
+</html>

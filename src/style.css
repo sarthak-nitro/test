@@ -1,0 +1,38 @@
+body {
+    font-family: monospace;
+    background: #1a1a2e;
+    color: #0ff;
+    padding: 20px;
+    margin: 0;
+}
+
+h1 {
+    color: #e94560;
+    text-align: center;
+}
+
+.signal {
+    background: #16213e;
+    padding: 10px;
+    margin: 8px 0;
+    border-left: 3px solid #0ff;
+}
+
+.label {
+    color: #e94560;
+    font-weight: bold;
+}
+
+.value {
+    color: #0f0;
+    word-break: break-all;
+}
+
+#final {
+    background: #e94560;
+    color: #fff;
+    padding: 15px;
+    margin-top: 20px;
+    font-size: 1.2em;
+    text-align: center;
+}

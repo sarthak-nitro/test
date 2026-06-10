@@ -1,0 +1,19 @@
+{
+  "name": "nitro-fingerprint-dev",
+  "version": "1.0.14",
+  "description": "Browser fingerprinting library using canvas, audio, WebGL, fonts, and speech voices",
+  "type": "module",
+  "main": "dist/index.global.js",
+  "module": "dist/index.mjs",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "devDependencies": {
+    "vite": "^8.0.12"
+  }
+}

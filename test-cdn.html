@@ -1,0 +1,21 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Test CDN Build</title>
+</head>
+<body>
+    <h1>Testing nitro-fingerprint-dev</h1>
+    <pre id="result">Loading...</pre>
+
+    <!-- Global script (like CDN usage) -->
+    <script src="./dist/index.global.js"></script>
+    <script>
+        NitroFingerprint.getFingerprint().then(result => {
+            document.getElementById('result').textContent =
+                'Fingerprint: ' + result.fingerprint + '\n\n' +
+                'Signals:\n' + JSON.stringify(result.signals, null, 2);
+        });
+    </script>
+</body>
+</html>
