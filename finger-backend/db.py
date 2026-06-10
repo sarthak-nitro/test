@@ -8,11 +8,9 @@ from psycopg_pool import ConnectionPool
 
 log = logging.getLogger("finger-backend.db")
 
-# Peer auth via Unix socket as OS user `postgres`.
-# Equivalent to `sudo -u postgres psql -d fingerprints`.
 DATABASE_URL = os.environ.get(
     "DATABASE_URL",
-    "postgresql://postgres@/fingerprints?host=/var/run/postgresql",
+    "postgresql://finger@localhost/fingerprints",
 )
 
 SCHEMA = """
