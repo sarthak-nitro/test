@@ -67,5 +67,5 @@ class Handler(BaseHTTPRequestHandler):
 
 
 if __name__ == "__main__":
-    print("finger-backend listening on :3000")
+    print("finger-backend listening on :5000")
     HTTPServer(("0.0.0.0", 5000), Handler).serve_forever()
