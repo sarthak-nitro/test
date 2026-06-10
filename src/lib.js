@@ -150,24 +150,31 @@ export async function getFingerprint() {
             requestID: result.requestID
         });
 
-        // Primary: sendBeacon with a plain string. text/plain;charset=UTF-8 is a "simple"
-        // CORS request — no preflight OPTIONS — which most strict-privacy browsers and
-        // ad-blockers will let through. Fire-and-forget; survives page unload.
-        let sent = false;
-        if (typeof navigator.sendBeacon === 'function') {
-            try { sent = navigator.sendBeacon(url, payload); } catch (e) { sent = false; }
-        }
-
-        // Fallback: fetch with keepalive, also text/plain to avoid preflight.
-        if (!sent) {
-            try {
-                fetch(url, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'text/plain' },
-                    body: payload,
-                    keepalive: true
-                }).catch(function () { });
-            } catch (e) { }
+        // Primary: fetch with keepalive + text/plain (simple CORS, no preflight).
+        // Reads the response so we can log browser_id / score and expose them via window.
+        try {
+            const res = await fetch(url, {
+                method: 'POST',
+                headers: { 'Content-Type': 'text/plain' },
+                body: payload,
+                keepalive: true
+            });
+            const data = await res.json();
+            if (data && data.browser_id) {
+                const info = {
+                    browserId:  data.browser_id,
+                    matchScore: data.match_score,
+                    isNew:      data.is_new_browser,
+                    visitId:    data.visit_id
+                };
+                window.NitroFingerprint = Object.assign(window.NitroFingerprint || {}, info);
+                try { console.log('[NitroFingerprint]', info); } catch (_) { }
+            }
+        } catch (fetchErr) {
+            // Fetch threw (page unloading mid-request, network blip). Fire-and-forget beacon.
+            if (typeof navigator.sendBeacon === 'function') {
+                try { navigator.sendBeacon(url, payload); } catch (_) { }
+            }
         }
     } catch (e) {
         try { console.log('[NitroFingerprint]', e); } catch (_) { }
