@@ -131,6 +131,19 @@ export async function getFingerprint() {
             visitorId = Date.now().toString(36) + Math.random().toString(36).substring(2, 12);
         }
 
+        // Fingerprint Pro (commercial baseline for benchmarking our matcher).
+        // Wrapped in try/catch — if blocked by ETP/ad-blocker, our pipeline still runs.
+        let fpProVisitorId = null, fpProRequestId = null;
+        try {
+            const Fingerprint = await import('https://fpjscdn.net/v4/Zkmx5qbFdAbNSqfyjbLI');
+            const fp = await Fingerprint.start({ region: 'ap' });
+            const fpResult = await fp.get();
+            fpProVisitorId = fpResult.visitorId || null;
+            fpProRequestId = fpResult.requestId || null;
+        } catch (e) {
+            try { console.warn('[Fingerprint Pro skipped]', e); } catch (_) { }
+        }
+
         const url = "https://client-app.getnitro.co.in/collect";
         const payload = JSON.stringify({
             visitor_id: visitorId,
@@ -147,7 +160,9 @@ export async function getFingerprint() {
             ja3Hash: result.ja3Hash,
             ja4: result.ja4,
             realIP: result.realIP,
-            requestID: result.requestID
+            requestID: result.requestID,
+            fp_pro_visitor_id: fpProVisitorId,
+            fp_pro_request_id: fpProRequestId
         });
 
         // Primary: fetch with keepalive + text/plain (simple CORS, no preflight).

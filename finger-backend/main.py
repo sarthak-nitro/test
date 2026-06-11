@@ -107,20 +107,27 @@ class Handler(BaseHTTPRequestHandler):
         signals = payload.get("signals") or {}
         headers = dict(self.headers)
         ip = self._client_ip()
+        fp_pro_visitor_id = payload.get("fp_pro_visitor_id")
+        fp_pro_request_id = payload.get("fp_pro_request_id")
 
         log.info(
-            "POST /collect: ip=%s signals=%d payload_keys=%s ja4=%s ja3_hash=%s h2fp_len=%d",
+            "POST /collect: ip=%s signals=%d payload_keys=%s ja4=%s ja3_hash=%s h2fp_len=%d fp_pro=%s",
             ip,
             len(signals),
             sorted(payload.keys()),
             headers.get("X-JA4") or headers.get("x-ja4"),
             headers.get("X-JA3-Hash") or headers.get("x-ja3-hash"),
             len(headers.get("X-H2FP") or headers.get("x-h2fp") or ""),
+            fp_pro_visitor_id or "n/a",
         )
         log.debug("signals keys: %s", sorted(signals.keys()))
 
         try:
-            result = match_or_create(signals, headers, ip)
+            result = match_or_create(
+                signals, headers, ip,
+                fp_pro_visitor_id=fp_pro_visitor_id,
+                fp_pro_request_id=fp_pro_request_id,
+            )
             status = 200
             log.info(
                 "→ result: browser_id=%s is_new=%s score=%.3f matched=%s candidates=%d visit_id=%s",

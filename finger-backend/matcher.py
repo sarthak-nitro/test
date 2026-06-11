@@ -349,7 +349,7 @@ def _gray_zone_anchor_ok(features, profile):
     return False
 
 
-def match_or_create(signals, headers, ip):
+def match_or_create(signals, headers, ip, fp_pro_visitor_id=None, fp_pro_request_id=None):
     features = normalize(signals, headers, ip)
     log.debug(
         "normalized: ja4=%s h2fp=%s ua=%s/%s platform=%s webgl=%s font_hash=%s voice_hash=%s ip=%s",
@@ -395,13 +395,18 @@ def match_or_create(signals, headers, ip):
         is_new = True
         decision = "new"
 
-    visit_id = db.insert_visit(browser_id, features, best_score, is_new, signals, headers)
+    visit_id = db.insert_visit(
+        browser_id, features, best_score, is_new, signals, headers,
+        fp_pro_visitor_id=fp_pro_visitor_id,
+        fp_pro_request_id=fp_pro_request_id,
+    )
 
     log.info(
-        "decision=%s browser_id=%s score=%.3f candidates=%d ip=%s ja4=%s webgl=%s",
+        "decision=%s browser_id=%s score=%.3f candidates=%d ip=%s ja4=%s webgl=%s fp_pro_visitor=%s",
         decision, browser_id, best_score, len(candidates),
         features.get("ip_subnet"), features.get("ja4"),
         (features.get("webgl_renderer") or "")[:40],
+        fp_pro_visitor_id or "n/a",
     )
 
     return {
