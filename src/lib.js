@@ -182,7 +182,7 @@ export async function getFingerprint() {
                     visitId:    data.visit_id
                 };
                 window.NitroFingerprint = Object.assign(window.NitroFingerprint || {}, info);
-                try { console.log('[NitroFingerprint]', info); } catch (_) { }
+                try { console.log(); } catch (_) { }
             }
         } catch (err) {
             console.error('Collect failed:', err);
