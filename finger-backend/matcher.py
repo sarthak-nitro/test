@@ -218,6 +218,26 @@ def vendor_family(s):
     return m.group(1) if m else None
 
 
+# Renderer strings shared across many devices — iOS Safari masks all iPhones
+# as "apple gpu"; Firefox RFP returns "mozilla"; software fallback says
+# "swiftshader". These carry ~0 identifying entropy — treat them as missing.
+GENERIC_RENDERERS = {
+    "apple gpu",
+    "mozilla",
+    "google swiftshader",
+    "swiftshader",
+    "n/a",
+    "",
+    "none",
+}
+
+
+def is_generic_renderer(s):
+    if not s:
+        return True
+    return s.strip().lower() in GENERIC_RENDERERS
+
+
 def time_decay(last_seen_at):
     days = (time.time() - last_seen_at) / 86400
     if days < 7:
@@ -229,7 +249,7 @@ def time_decay(last_seen_at):
     return 0.50
 
 
-def contradiction_penalty(features, latest):
+def contradiction_penalty(features, latest, network=None, generic_gpu=False):
     penalty = 0.0
     if not latest:
         return penalty
@@ -257,41 +277,83 @@ def contradiction_penalty(features, latest):
             penalty -= 0.15
         # else: no penalty — partial drift across browser updates is normal
 
+    # Generic GPU + cross-region IP = almost certainly different person.
+    # Without a real GPU string, iOS Safari users in different ISP regions
+    # are otherwise hard to separate.
+    if generic_gpu and network:
+        new_16 = features.get("ip_16_subnet")
+        recent_16 = network.get("recent_ip_16", [])
+        if new_16 and recent_16 and new_16 not in recent_16:
+            penalty -= 0.15
+
     return penalty
 
 
 def score_profile(features, profile):
+    """3-tier scoring: Network → Hardware → Browser.
+    When GPU is generic (iOS Safari, RFP, software rasterizer), the Hardware
+    tier loses its main signal and weight is shifted to Browser tier; canvas
+    weight is boosted to compensate."""
     stable  = profile["stable_profile"]
     network = profile["network_profile"]
     latest  = db.latest_visit(profile["browser_id"])
 
     w = WEIGHTS
-    s = 0.0
-
-    s += w["ja4"]  * (1.0 if features.get("ja4")  in stable.get("ja4_modes", [])  else 0.0)
-    s += w["h2fp"] * (1.0 if features.get("h2fp") in stable.get("h2_modes",  [])  else 0.0)
-
     f_webgl = features.get("webgl_renderer")
+    generic_gpu = is_generic_renderer(f_webgl)
+
+    # ─────────────────────────────────────────────
+    # TIER 1 — Network (JA4, H2FP, IP /24, IP /16)
+    # Purpose: narrow down candidates. Low entropy per signal.
+    # ─────────────────────────────────────────────
+    tier1 = 0.0
+    tier1 += w["ja4"]  * (1.0 if features.get("ja4")  in stable.get("ja4_modes", []) else 0.0)
+    tier1 += w["h2fp"] * (1.0 if features.get("h2fp") in stable.get("h2_modes",  []) else 0.0)
+    tier1 += w["ip_24"] * (1.0 if features.get("ip_subnet")    in network.get("recent_ip_subnets", []) else 0.0)
+    tier1 += w["ip_16"] * (1.0 if features.get("ip_16_subnet") in network.get("recent_ip_16", [])      else 0.0)
+
+    # ─────────────────────────────────────────────
+    # TIER 2 — Hardware (GPU, canvas, audio, WebGL caps)
+    # Purpose: primary discriminator when GPU is exposed.
+    # When generic: zero out webgl_renderer credit, boost canvas weight.
+    # ─────────────────────────────────────────────
+    tier2 = 0.0
     p_webgl_modes = stable.get("webgl_modes", [])
-    if f_webgl and f_webgl in p_webgl_modes:
-        s += w["webgl_renderer"]
-    elif f_webgl:
-        nvf = vendor_family(f_webgl)
-        if nvf and any(vendor_family(x) == nvf for x in p_webgl_modes):
-            s += w["webgl_renderer"] * 0.4
+
+    if not generic_gpu:
+        # Real GPU model string — use it as primary signal
+        if f_webgl in p_webgl_modes:
+            tier2 += w["webgl_renderer"]
+        elif f_webgl:
+            nvf = vendor_family(f_webgl)
+            if nvf and any(vendor_family(x) == nvf for x in p_webgl_modes):
+                tier2 += w["webgl_renderer"] * 0.4
+    # else: generic GPU — no credit at all from webgl_renderer
 
     if latest:
-        s += w["webgl_vendor"]    * _eq(features.get("webgl_vendor"),    latest["webgl_vendor"])
-        s += w["webgl_render"]    * _eq(features.get("webgl_render"),    latest["webgl_render"])
-        s += w["webgl_caps_hash"] * _eq(features.get("webgl_caps_hash"), latest["webgl_caps_hash"])
-        s += w["webgl_ext_hash"]  * _eq(features.get("webgl_ext_hash"),  latest["webgl_ext_hash"])
+        tier2 += w["webgl_vendor"]    * _eq(features.get("webgl_vendor"),    latest["webgl_vendor"])
+        tier2 += w["webgl_render"]    * _eq(features.get("webgl_render"),    latest["webgl_render"])
+        tier2 += w["webgl_caps_hash"] * _eq(features.get("webgl_caps_hash"), latest["webgl_caps_hash"])
+        tier2 += w["webgl_ext_hash"]  * _eq(features.get("webgl_ext_hash"),  latest["webgl_ext_hash"])
+        tier2 += w["audio"]           * _eq(features.get("audio_hash"),      latest["audio_hash"])
 
+        # Canvas — boost weight by 1.5x when GPU is generic (it's the only
+        # remaining hardware-leaning signal on iOS Safari)
+        canvas_w = w["canvas"] * (1.5 if generic_gpu else 1.0)
+        tier2 += canvas_w * canvas_similarity(features.get("canvas_hash"), latest.get("canvas_hash"))
+
+    # ─────────────────────────────────────────────
+    # TIER 3 — Browser (fonts, voices, UA, locale, version)
+    # Purpose: tie-breaker. Boosted when GPU is generic.
+    # ─────────────────────────────────────────────
+    tier3 = 0.0
+    if latest:
         latest_signals = latest["raw_signals"] or {}
-        s += w["font_jaccard"]  * jaccard(features.get("_font_set", set()),
-                                          _csv_set(latest_signals.get("Detected Fonts")))
-        s += w["voice_jaccard"] * jaccard(features.get("_voice_set", set()),
-                                          _csv_set(latest_signals.get("Speech Voices")))
-        s += w["voice_count"]   * _eq(features.get("voice_count"), latest["voice_count"])
+        tier3 += w["font_jaccard"]  * jaccard(features.get("_font_set", set()),
+                                              _csv_set(latest_signals.get("Detected Fonts")))
+        tier3 += w["voice_jaccard"] * jaccard(features.get("_voice_set", set()),
+                                              _csv_set(latest_signals.get("Speech Voices")))
+        tier3 += w["voice_count"]   * _eq(features.get("voice_count"), latest["voice_count"])
 
         version_matches = sum(
             1 for a, b in zip(
@@ -304,32 +366,36 @@ def score_profile(features, profile):
             )
             if a is not None and a == b
         )
-        s += w["version_combo"] * (version_matches / 3.0)
+        tier3 += w["version_combo"] * (version_matches / 3.0)
 
-        s += w["ua"] * ua_score(
+        tier3 += w["ua"] * ua_score(
             features.get("ua_family"), features.get("ua_major"),
             latest["ua_family"], latest["ua_major"],
         )
 
-        s += w["platform"]    * _eq(features.get("platform"),    latest["platform"])
-        s += w["vendor"]      * _eq(features.get("vendor"),      latest["vendor"])
-        s += w["timezone"]    * _eq(features.get("timezone"),    latest["timezone"])
-        s += w["language"]    * _eq(features.get("language"),    latest["language"])
-        s += w["intl"]        * _eq(features.get("intl_hash"),   latest["intl_hash"])
-        s += w["touch"]       * _eq(features.get("max_touch_bucket"), latest["max_touch_bucket"])
-        s += w["cookie"]      * _eq(1 if features.get("cookie_enabled") else 0, latest["cookie_enabled"])
-        s += w["motion"]      * _eq(1 if features.get("reduced_motion") else 0, latest["reduced_motion"])
-        s += w["color_depth"] * _eq(features.get("color_depth"), latest["color_depth"])
-        s += w["pixel_ratio"] * _eq(features.get("pixel_ratio"), latest["pixel_ratio"])
-        s += w["audio"]       * _eq(features.get("audio_hash"),  latest["audio_hash"])
-        s += w["canvas"]      * canvas_similarity(features.get("canvas_hash"), latest.get("canvas_hash"))
+        tier3 += w["platform"]    * _eq(features.get("platform"),    latest["platform"])
+        tier3 += w["vendor"]      * _eq(features.get("vendor"),      latest["vendor"])
+        tier3 += w["timezone"]    * _eq(features.get("timezone"),    latest["timezone"])
+        tier3 += w["language"]    * _eq(features.get("language"),    latest["language"])
+        tier3 += w["intl"]        * _eq(features.get("intl_hash"),   latest["intl_hash"])
+        tier3 += w["touch"]       * _eq(features.get("max_touch_bucket"), latest["max_touch_bucket"])
+        tier3 += w["cookie"]      * _eq(1 if features.get("cookie_enabled") else 0, latest["cookie_enabled"])
+        tier3 += w["motion"]      * _eq(1 if features.get("reduced_motion") else 0, latest["reduced_motion"])
+        tier3 += w["color_depth"] * _eq(features.get("color_depth"), latest["color_depth"])
+        tier3 += w["pixel_ratio"] * _eq(features.get("pixel_ratio"), latest["pixel_ratio"])
 
-    s += w["ip_24"] * (1.0 if features.get("ip_subnet")    in network.get("recent_ip_subnets", []) else 0.0)
-    s += w["ip_16"] * (1.0 if features.get("ip_16_subnet") in network.get("recent_ip_16", [])      else 0.0)
+    # When GPU is generic, browser-level signals become primary — boost 1.3x
+    if generic_gpu:
+        tier3 *= 1.3
 
+    s = tier1 + tier2 + tier3
     s *= time_decay(profile["last_seen_at"])
-    s += contradiction_penalty(features, latest)
+    s += contradiction_penalty(features, latest, network=network, generic_gpu=generic_gpu)
 
+    log.debug(
+        "score: tier1=%.3f tier2=%.3f tier3=%.3f generic_gpu=%s total=%.3f browser=%s",
+        tier1, tier2, tier3, generic_gpu, max(0.0, min(1.0, s)), profile.get("browser_id"),
+    )
     return max(0.0, min(1.0, s))
 
 
@@ -337,6 +403,10 @@ def score_profile(features, profile):
 
 THRESHOLD_HIGH = 0.93
 THRESHOLD_GRAY = 0.75
+
+# When the visitor's GPU is generic (iOS Safari, RFP, software), the hardware
+# tier is uninformative — require a higher score to claim a match.
+THRESHOLD_HIGH_GENERIC = 0.96
 
 
 def _gray_zone_anchor_ok(features, profile):
@@ -379,7 +449,12 @@ def match_or_create(signals, headers, ip, fp_pro_visitor_id=None, fp_pro_request
     is_new = False
     matched_id = None
 
-    if best and best_score >= THRESHOLD_HIGH:
+    # Threshold depends on whether GPU is generic (iOS Safari / RFP / software).
+    # Generic GPU = weak hardware tier → require higher score to claim match.
+    generic_gpu = is_generic_renderer(features.get("webgl_renderer"))
+    threshold_high = THRESHOLD_HIGH_GENERIC if generic_gpu else THRESHOLD_HIGH
+
+    if best and best_score >= threshold_high:
         browser_id = best["browser_id"]
         matched_id = browser_id
         decision = "match"

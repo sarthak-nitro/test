@@ -135,13 +135,23 @@ export async function getFingerprint() {
         // Wrapped in try/catch — if blocked by ETP/ad-blocker, our pipeline still runs.
         let fpProVisitorId = null, fpProRequestId = null;
         try {
-            const Fingerprint = await import('https://fpjscdn.net/v4/Zkmx5qbFdAbNSqfyjbLI');
+            // FP Pro proxied through our own subdomain (Shopify CSP / Firefox ETP friendly).
+            // nginx /fpjs/script  → fpjscdn.net loader
+            // nginx /fpjs/identify → ap.api.fpjs.io (resolved by FP loader internally)
+            const Fingerprint = await import('https://client-app.getnitro.co.in/fpjs/script');
             const fp = await Fingerprint.start({ region: 'ap' });
             const fpResult = await fp.get();
-            fpProVisitorId = fpResult.visitorId || null;
-            fpProRequestId = fpResult.requestId || null;
+            // console.log('[NitroFingerprint] FP raw result:', fpResult);
+            // console.log('[NitroFingerprint] FP keys:', fpResult && Object.keys(fpResult));
+            // FP Pro v4 returns snake_case (visitor_id / event_id), older docs say
+            // camelCase (visitorId / requestId). Accept either to be safe.
+            fpProVisitorId = (fpResult && (fpResult.visitor_id || fpResult.visitorId)) || null;
+            fpProRequestId = (fpResult && (fpResult.event_id  || fpResult.requestId)) || null;
         } catch (e) {
-            try { console.warn('[Fingerprint Pro skipped]', e); } catch (_) { }
+            console.error('Fingerprint Pro failed');
+            console.error(e);
+            console.error(e && e.message);
+            console.error(e && e.stack);
         }
 
         const url = "https://client-app.getnitro.co.in/collect";
@@ -185,12 +195,12 @@ export async function getFingerprint() {
                 };
                 window.NitroFingerprint = Object.assign(window.NitroFingerprint || {}, info);
                 try {
-                    console.log('[NitroFingerprint] browserId:',       data.browser_id);
-                    console.log('[NitroFingerprint] matchScore:',      data.match_score);
-                    console.log('[NitroFingerprint] isNew:',           data.is_new_browser);
-                    console.log('[NitroFingerprint] visitId:',         data.visit_id);
-                    console.log('[NitroFingerprint] fpProVisitorId:',  fpProVisitorId);
-                    console.log('[NitroFingerprint] fpProRequestId:',  fpProRequestId);
+                    // console.log('[NitroFingerprint] browserId:',       data.browser_id);
+                    // console.log('[NitroFingerprint] matchScore:',      data.match_score);
+                    // console.log('[NitroFingerprint] isNew:',           data.is_new_browser);
+                    // console.log('[NitroFingerprint] visitId:',         data.visit_id);
+                    // console.log('[NitroFingerprint] fpProVisitorId:',  fpProVisitorId);
+                    // console.log('[NitroFingerprint] fpProRequestId:',  fpProRequestId);
                 } catch (_) { }
             }
         } catch (err) {
