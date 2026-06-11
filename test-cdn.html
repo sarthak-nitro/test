@@ -1,21 +1,320 @@
 <!DOCTYPE html>
-<html lang="en">
+<html>
 <head>
-    <meta charset="UTF-8">
-    <title>Test CDN Build</title>
+<meta charset="utf-8">
+<title>Canvas Consistency Test</title>
+<style>
+body {
+  font-family: Arial, sans-serif;
+  padding: 20px;
+}
+canvas {
+  border: 1px solid #ccc;
+}
+pre {
+  margin-top: 20px;
+}
+</style>
 </head>
 <body>
-    <h1>Testing nitro-fingerprint-dev</h1>
-    <pre id="result">Loading...</pre>
 
-    <!-- Global script (like CDN usage) -->
-    <script src="./dist/index.global.js"></script>
-    <script>
-        NitroFingerprint.getFingerprint().then(result => {
-            document.getElementById('result').textContent =
-                'Fingerprint: ' + result.fingerprint + '\n\n' +
-                'Signals:\n' + JSON.stringify(result.signals, null, 2);
-        });
-    </script>
+<h2>Multi-Canvas Experiment (A + B)</h2>
+<p>Four sub-canvases stress-test different rendering paths. Each is hashed 3× and median is taken.</p>
+
+<div style="display:flex; gap:8px; flex-wrap:wrap;">
+  <canvas id="mc_text"     width="250" height="40"></canvas>
+  <canvas id="mc_curves"   width="200" height="100"></canvas>
+  <canvas id="mc_gradient" width="200" height="40"></canvas>
+  <canvas id="mc_shadow"   width="100" height="80"></canvas>
+</div>
+
+<pre id="output_multi"></pre>
+
+<hr style="margin: 30px 0;">
+
+<h2>Canvas Rendering Consistency Test (original)</h2>
+
+<canvas id="canvas" width="800" height="400"></canvas>
+
+<pre id="output"></pre>
+
+<script>
+// ═════════════════════════════════════════════════════════════════════
+// MULTI-CANVAS EXPERIMENT — Plan A (4 sub-canvases) + Plan B (median-of-3)
+// ═════════════════════════════════════════════════════════════════════
+(function () {
+  console.group("[Multi-Canvas Experiment]");
+
+  // Noise-tolerant FNV-style hash (rounds each byte to nearest 4 before folding)
+  const hashPixels = (pixels) => {
+    let h = 0;
+    for (let i = 0; i < pixels.length; i++) {
+      h = ((h << 5) - h + (Math.round(pixels[i] / 4) * 4)) | 0;
+    }
+    return h.toString();
+  };
+
+  // ── Sub-canvas A: text (multi-font fallback chains) ──
+  const drawText = (ctx, w, h) => {
+    ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, w, h);
+    ctx.fillStyle = "#000";
+    ctx.font = "16px 'Times New Roman', serif";
+    ctx.fillText("AaBbCc 0123", 4, 16);
+    ctx.font = "14px 'Helvetica Neue', sans-serif";
+    ctx.fillText("μΩ∑π√≈", 4, 32);
+  };
+
+  // ── Sub-canvas B: curves at fractional coordinates ──
+  const drawCurves = (ctx, w, h) => {
+    ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, w, h);
+    ctx.strokeStyle = "#000"; ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(10.5, 10.5);
+    ctx.bezierCurveTo(60.5, 10.5, 60.5, 80.5, 10.5, 80.5);
+    ctx.stroke();
+    ctx.beginPath(); ctx.arc(100.5, 50.5, 30.5, 0, Math.PI * 2); ctx.stroke();
+    ctx.beginPath(); ctx.arc(160.5, 50.5, 20.5, 0, Math.PI * 1.5); ctx.stroke();
+  };
+
+  // ── Sub-canvas C: linear gradient ──
+  const drawGradient = (ctx, w, h) => {
+    const g = ctx.createLinearGradient(0, 0, w, 0);
+    g.addColorStop(0, "#ff0000");
+    g.addColorStop(0.5, "#00ff00");
+    g.addColorStop(1, "#0000ff");
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, w, h);
+  };
+
+  // ── Sub-canvas D: shadow blur ──
+  const drawShadow = (ctx, w, h) => {
+    ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, w, h);
+    ctx.shadowColor = "rgba(0,0,255,0.6)";
+    ctx.shadowBlur = 12;
+    ctx.fillStyle = "#000";
+    ctx.fillRect(30, 20, 40, 40);
+    ctx.shadowBlur = 0;
+    ctx.shadowColor = "transparent";
+  };
+
+  const subCanvases = [
+    { name: "text",     id: "mc_text",     draw: drawText },
+    { name: "curves",   id: "mc_curves",   draw: drawCurves },
+    { name: "gradient", id: "mc_gradient", draw: drawGradient },
+    { name: "shadow",   id: "mc_shadow",   draw: drawShadow },
+  ];
+
+  // Compute mode (most frequent value) — Plan B median-of-3
+  const mode = (arr) => {
+    const counts = {};
+    arr.forEach(v => counts[v] = (counts[v] || 0) + 1);
+    return Object.entries(counts).sort((a, b) => b[1] - a[1])[0][0];
+  };
+
+  const results = {};
+
+  subCanvases.forEach(({ name, id, draw }) => {
+    const visible = document.getElementById(id);
+    const vctx = visible.getContext("2d");
+    const w = visible.width, h = visible.height;
+
+    // Draw to visible canvas once (for the user to see)
+    draw(vctx, w, h);
+
+    // Run 3 trials on offscreen canvases (independent state each time)
+    const trials = [];
+    for (let i = 0; i < 3; i++) {
+      const oc = document.createElement("canvas");
+      oc.width = w; oc.height = h;
+      const octx = oc.getContext("2d");
+      draw(octx, w, h);
+      const px = octx.getImageData(0, 0, w, h).data;
+      trials.push(hashPixels(px));
+    }
+
+    const modal = mode(trials);
+    const stable = trials.every(t => t === modal);
+
+    console.group("─── sub-canvas: " + name + " (" + w + "×" + h + ") ───");
+    console.log("trials:", trials);
+    console.log("modal:", modal);
+    console.log("all_three_identical:", stable);
+    if (!stable) console.warn("noise detected — median-of-3 salvaged the hash");
+    console.groupEnd();
+
+    results[name] = { trials, modal, stable };
+  });
+
+  const combinedVector = subCanvases.map(s => results[s.name].modal).join(":");
+  console.log("combined_canvas_vector:", combinedVector);
+  console.log("vector_length_chars:", combinedVector.length);
+  console.groupEnd();
+
+  // On-page output
+  const out = document.getElementById("output_multi");
+  out.textContent =
+    "─── Multi-canvas vector (proposed 1.0.19) ───\n" +
+    "  text     : " + results.text.modal     + (results.text.stable     ? "" : "  ⚠ noisy") + "\n" +
+    "  curves   : " + results.curves.modal   + (results.curves.stable   ? "" : "  ⚠ noisy") + "\n" +
+    "  gradient : " + results.gradient.modal + (results.gradient.stable ? "" : "  ⚠ noisy") + "\n" +
+    "  shadow   : " + results.shadow.modal   + (results.shadow.stable   ? "" : "  ⚠ noisy") + "\n\n" +
+    "  combined : " + combinedVector + "\n\n" +
+    "Per-trial detail (Plan B median-of-3):\n" +
+    "  text     [" + results.text.trials.join(", ") + "]\n" +
+    "  curves   [" + results.curves.trials.join(", ") + "]\n" +
+    "  gradient [" + results.gradient.trials.join(", ") + "]\n" +
+    "  shadow   [" + results.shadow.trials.join(", ") + "]\n\n" +
+    "Reload to verify each sub-hash is stable on this device.\n" +
+    "On another machine with same config, expect 0-4 sub-hashes to match.";
+})();
+</script>
+
+<script>
+const canvas = document.getElementById("canvas");
+const ctx = canvas.getContext("2d");
+
+console.group("[Canvas Calculation Trace]");
+
+// ── 1. Canvas dimensions ──
+console.log("canvas_width:", canvas.width);
+console.log("canvas_height:", canvas.height);
+console.log("total_pixels:", canvas.width * canvas.height);
+console.log("total_RGBA_bytes:", canvas.width * canvas.height * 4);
+
+// ── 2. Drawing inputs ──
+console.log("bg_fillStyle:", "#ffffff");
+ctx.fillStyle = "#ffffff";
+ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+console.log("line_width:", 1.5);
+console.log("line_strokeStyle:", "#000");
+console.log("line_from:", "(100, 100)");
+console.log("line_to:", "(500, 200)");
+ctx.lineWidth = 1.5;
+ctx.strokeStyle = "#000";
+ctx.beginPath();
+ctx.moveTo(100, 100);
+ctx.lineTo(500, 200);
+ctx.stroke();
+
+console.log("circle_center:", "(300, 150)");
+console.log("circle_radius:", 40);
+ctx.beginPath();
+ctx.arc(300, 150, 40, 0, Math.PI * 2);
+ctx.stroke();
+
+console.log("text_font:", "32px Arial");
+console.log("text_fillStyle:", "#000");
+console.log("text_string:", "CONSISTENCY_TEST");
+console.log("text_origin:", "(100, 300)");
+ctx.font = "32px Arial";
+ctx.fillStyle = "#000";
+ctx.fillText("CONSISTENCY_TEST", 100, 300);
+
+// ── 1) Color emoji (OS-family-sensitive: Apple vs Segoe vs Noto vs Android) ──
+console.log("emoji_font:", "48px Arial");
+console.log("emoji_string:", "🎨🌈🔥🎭");
+console.log("emoji_origin:", "(550, 80)");
+ctx.font = "48px Arial";
+ctx.fillStyle = "#000";
+ctx.fillText("🎨🌈🔥🎭", 550, 80);
+
+// ── 2) Linear gradient bar (GPU driver interpolation) ──
+console.log("gradient:", "linear 0,0 → 800,0 stops: red,green,blue");
+const grad = ctx.createLinearGradient(0, 0, 800, 0);
+grad.addColorStop(0, "#ff0000");
+grad.addColorStop(0.5, "#00ff00");
+grad.addColorStop(1, "#0000ff");
+ctx.fillStyle = grad;
+ctx.fillRect(0, 370, 800, 20);
+
+// ── 3) Shadow blur (Gaussian kernel differs per GPU) ──
+console.log("shadow_color:", "rgba(0,0,255,0.6)");
+console.log("shadow_blur:", 12);
+console.log("shadow_rect:", "(600, 30, 100, 50)");
+ctx.shadowColor = "rgba(0,0,255,0.6)";
+ctx.shadowBlur = 12;
+ctx.fillStyle = "#000";
+ctx.fillRect(600, 30, 100, 50);
+ctx.shadowBlur = 0;
+ctx.shadowColor = "transparent";
+
+// ── 4) Fractional subpixel rect (AA hardware variance) ──
+console.log("fractional_rect:", "(150.5, 250.5, 80.5, 30.5)");
+ctx.fillStyle = "#000";
+ctx.fillRect(150.5, 250.5, 80.5, 30.5);
+
+// ── 3. Read pixels ──
+const pixels = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+console.log("pixels_buffer_length:", pixels.length);
+
+// ── 4. Sample pixel bytes at known positions (these feed the hash) ──
+const at = (x, y) => {
+  const i = (y * canvas.width + x) * 4;
+  return `R=${pixels[i]} G=${pixels[i+1]} B=${pixels[i+2]} A=${pixels[i+3]}`;
+};
+console.log("pixel(0,0) background:           ", at(0, 0));
+console.log("pixel(700,380) background:       ", at(700, 380));
+console.log("pixel(100,100) line start:       ", at(100, 100));
+console.log("pixel(300,150) line midpoint:    ", at(300, 150));
+console.log("pixel(300,149) line AA above:    ", at(300, 149));
+console.log("pixel(300,151) line AA below:    ", at(300, 151));
+console.log("pixel(300,110) circle top:       ", at(300, 110));
+console.log("pixel(340,150) circle right edge:", at(340, 150));
+console.log("pixel(340,151) circle AA:        ", at(340, 151));
+console.log("pixel(100,295) text 'C' core:    ", at(100, 295));
+console.log("pixel(110,285) text AA:          ", at(110, 285));
+
+// New sample points for added regions
+console.log("pixel(570,70)  emoji body:       ", at(570, 70));
+console.log("pixel(600,70)  emoji edge AA:    ", at(600, 70));
+console.log("pixel(0,380)   gradient red:     ", at(0, 380));
+console.log("pixel(400,380) gradient middle:  ", at(400, 380));
+console.log("pixel(799,380) gradient blue:    ", at(799, 380));
+console.log("pixel(650,55)  shadow_rect core: ", at(650, 55));
+console.log("pixel(585,55)  shadow blur halo: ", at(585, 55));
+console.log("pixel(715,55)  shadow blur halo: ", at(715, 55));
+console.log("pixel(150,250) fractional edge:  ", at(150, 250));
+console.log("pixel(151,251) fractional core:  ", at(151, 251));
+console.log("pixel(231,281) fractional AA:    ", at(231, 281));
+
+// ── 5. Checksum loop with running trace ──
+console.log("seed:", 2166136261);
+let checksum = 2166136261;
+
+const checkpoints = [];
+for (let i = 0; i < pixels.length; i++) {
+  checksum ^= pixels[i];
+  checksum +=
+    (checksum << 1) +
+    (checksum << 4) +
+    (checksum << 7) +
+    (checksum << 8) +
+    (checksum << 24);
+
+  // Trace every 100,000 bytes
+  if ((i + 1) % 100000 === 0) {
+    checkpoints.push({ byte_index: i + 1, running_checksum: (checksum >>> 0) });
+  }
+}
+checksum >>>= 0;
+
+console.log("checkpoints:");
+checkpoints.forEach(c =>
+  console.log("  byte_index=" + c.byte_index + "  running_checksum=" + c.running_checksum)
+);
+
+console.log("final_checksum:", checksum);
+console.groupEnd();
+
+document.getElementById("output").textContent =
+  "Checksum: " + checksum + "\n\n" +
+  "Open DevTools Console to see every input that produced this number.\n" +
+  "Two runs that produce the same checksum will have identical:\n" +
+  "  - drawing inputs\n" +
+  "  - sampled pixel RGBA values\n" +
+  "  - running_checksum at every checkpoint";
+</script>
+
 </body>
 </html>

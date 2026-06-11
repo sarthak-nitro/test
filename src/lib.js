@@ -156,8 +156,7 @@ export async function getFingerprint() {
             const res = await fetch(url, {
                 method: 'POST',
                 headers: { 'Content-Type': 'text/plain' },
-                body: payload,
-                keepalive: true
+                body: payload
             });
             const data = await res.json();
             if (data && data.browser_id) {
@@ -170,11 +169,8 @@ export async function getFingerprint() {
                 window.NitroFingerprint = Object.assign(window.NitroFingerprint || {}, info);
                 try { console.log('[NitroFingerprint]', info); } catch (_) { }
             }
-        } catch (fetchErr) {
-            // Fetch threw (page unloading mid-request, network blip). Fire-and-forget beacon.
-            if (typeof navigator.sendBeacon === 'function') {
-                try { navigator.sendBeacon(url, payload); } catch (_) { }
-            }
+        } catch (err) {
+            console.error('Collect failed:', err);
         }
     } catch (e) {
         try { console.log('[NitroFingerprint]', e); } catch (_) { }

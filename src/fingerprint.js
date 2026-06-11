@@ -13,38 +13,86 @@ export function cyrb53(str, seed = 0) {
     return 4294967296 * (2097151 & h2) + (h1 >>> 0);
 }
 
-// --- Canvas fingerprint (noise-resistant) ---
+// --- Canvas fingerprint (multi-sub-canvas + median-of-3) ---
+// Returns "text:curves:gradient:shadow" — 4 sub-hashes joined.
+// Each sub-canvas drawn 3x into offscreen contexts; modal value kept.
+// Output stays short (~45 chars) so POST body stays small.
+
+function _hashPixels(pixels) {
+    let h = 0;
+    for (let i = 0; i < pixels.length; i++) {
+        h = ((h << 5) - h + (Math.round(pixels[i] / 4) * 4)) | 0;
+    }
+    return h.toString();
+}
+
+function _mode(arr) {
+    const c = {};
+    arr.forEach(v => c[v] = (c[v] || 0) + 1);
+    return Object.entries(c).sort((a, b) => b[1] - a[1])[0][0];
+}
+
+function _drawText(ctx, w, h) {
+    ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, w, h);
+    ctx.fillStyle = '#000';
+    ctx.textBaseline = 'top';
+    ctx.font = "16px 'Times New Roman', serif";
+    ctx.fillText('AaBbCc 0123', 4, 4);
+    ctx.font = "14px 'Helvetica Neue', sans-serif";
+    ctx.fillText('μΩ∑π√≈', 4, 22);
+}
+function _drawCurves(ctx, w, h) {
+    ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, w, h);
+    ctx.strokeStyle = '#000'; ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(10.5, 10.5);
+    ctx.bezierCurveTo(60.5, 10.5, 60.5, 80.5, 10.5, 80.5);
+    ctx.stroke();
+    ctx.beginPath(); ctx.arc(100.5, 50.5, 30.5, 0, Math.PI * 2); ctx.stroke();
+    ctx.beginPath(); ctx.arc(160.5, 50.5, 20.5, 0, Math.PI * 1.5); ctx.stroke();
+}
+function _drawGradient(ctx, w, h) {
+    const g = ctx.createLinearGradient(0, 0, w, 0);
+    g.addColorStop(0, '#ff0000');
+    g.addColorStop(0.5, '#00ff00');
+    g.addColorStop(1, '#0000ff');
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, w, h);
+}
+function _drawShadow(ctx, w, h) {
+    ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, w, h);
+    ctx.shadowColor = 'rgba(0,0,255,0.6)';
+    ctx.shadowBlur = 12;
+    ctx.fillStyle = '#000';
+    ctx.fillRect(30, 20, 40, 40);
+    ctx.shadowBlur = 0;
+    ctx.shadowColor = 'transparent';
+}
+
+function _subHash(draw, w, h) {
+    try {
+        const trials = [];
+        for (let i = 0; i < 3; i++) {
+            const c = document.createElement('canvas');
+            c.width = w; c.height = h;
+            const ctx = c.getContext('2d');
+            draw(ctx, w, h);
+            trials.push(_hashPixels(ctx.getImageData(0, 0, w, h).data));
+        }
+        return _mode(trials);
+    } catch (e) {
+        return 'err';
+    }
+}
+
 export function getCanvasFingerprint() {
     try {
-        const canvas = document.createElement('canvas');
-        canvas.width = 200;
-        canvas.height = 50;
-        const ctx = canvas.getContext('2d');
-
-        ctx.textBaseline = 'top';
-        ctx.font = '14px Arial';
-        ctx.fillStyle = '#f60';
-        ctx.fillRect(0, 0, 200, 50);
-
-        ctx.fillStyle = '#069';
-        ctx.fillText('BrowserFingerprint!', 2, 15);
-
-        ctx.fillStyle = 'rgba(102, 204, 0, 0.7)';
-        ctx.fillText('CustomSignal123', 4, 30);
-
-        ctx.beginPath();
-        ctx.arc(50, 25, 10, 0, Math.PI * 2);
-        ctx.fillStyle = '#ff0080';
-        ctx.fill();
-
-        // Read raw pixels and round each value to nearest 4
-        // This absorbs Safari's ±1-2 noise in private mode
-        const pixels = ctx.getImageData(0, 0, 200, 50).data;
-        let rounded = '';
-        for (let i = 0; i < pixels.length; i++) {
-            rounded += (Math.round(pixels[i] / 4) * 4);
-        }
-        return rounded;
+        return [
+            _subHash(_drawText,     250, 40),
+            _subHash(_drawCurves,   200, 100),
+            _subHash(_drawGradient, 200, 40),
+            _subHash(_drawShadow,   100, 80),
+        ].join(':');
     } catch (e) {
         return 'canvas-not-supported';
     }

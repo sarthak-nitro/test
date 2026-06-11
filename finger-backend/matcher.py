@@ -174,6 +174,18 @@ def _eq(a, b):
     return 1.0 if a is not None and a == b else 0.0
 
 
+def canvas_similarity(a, b):
+    """0.0-1.0 score across colon-joined sub-hashes.
+    Backwards-compatible: if one side is old single-hash, falls back to exact match."""
+    if not a or not b:
+        return 0.0
+    pa, pb = a.split(":"), b.split(":")
+    if len(pa) != len(pb):
+        return 1.0 if a == b else 0.0
+    matches = sum(1 for x, y in zip(pa, pb) if x == y)
+    return matches / len(pa)
+
+
 def jaccard(a, b):
     if not a or not b:
         return 0.0
@@ -239,8 +251,11 @@ def contradiction_penalty(features, latest):
 
     new_canvas = features.get("canvas_hash")
     old_canvas = latest.get("canvas_hash")
-    if new_canvas and old_canvas and new_canvas != old_canvas:
-        penalty -= 0.15
+    if new_canvas and old_canvas:
+        sim = canvas_similarity(new_canvas, old_canvas)
+        if sim < 0.5:                   # fewer than half sub-canvases match
+            penalty -= 0.15
+        # else: no penalty — partial drift across browser updates is normal
 
     return penalty
 
@@ -307,7 +322,7 @@ def score_profile(features, profile):
         s += w["color_depth"] * _eq(features.get("color_depth"), latest["color_depth"])
         s += w["pixel_ratio"] * _eq(features.get("pixel_ratio"), latest["pixel_ratio"])
         s += w["audio"]       * _eq(features.get("audio_hash"),  latest["audio_hash"])
-        s += w["canvas"]      * _eq(features.get("canvas_hash"), latest.get("canvas_hash"))
+        s += w["canvas"]      * canvas_similarity(features.get("canvas_hash"), latest.get("canvas_hash"))
 
     s += w["ip_24"] * (1.0 if features.get("ip_subnet")    in network.get("recent_ip_subnets", []) else 0.0)
     s += w["ip_16"] * (1.0 if features.get("ip_16_subnet") in network.get("recent_ip_16", [])      else 0.0)
