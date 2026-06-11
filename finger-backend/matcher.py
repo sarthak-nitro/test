@@ -91,13 +91,20 @@ def normalize(signals, headers, ip):
     def h(key):
         return headers.get(key) or headers.get(key.lower())
 
+    # GPU string: drop privacy-masked / placeholder values to NULL so they
+    # can't be used as a blocking key, don't contribute to score, and don't
+    # get stored on the profile.
+    _webgl_raw = (signals.get("WebGL Renderer") or "").strip().lower() or None
+    if _webgl_raw in {"apple gpu", "mozilla", "n/a", "none"}:
+        _webgl_raw = None
+
     return {
         # network stack
         "ja4":      h("X-JA4"),
         "ja3_hash": h("X-JA3-Hash"),
         "h2fp":     h("X-H2FP"),
         # gpu
-        "webgl_renderer": (signals.get("WebGL Renderer") or "").strip().lower() or None,
+        "webgl_renderer": _webgl_raw,
         "webgl_vendor":   (signals.get("WebGL Vendor") or "").strip().lower() or None,
         "webgl_render":   signals.get("WebGL Render"),
         "webgl_ext_hash": _sorted_csv_hash(signals.get("WebGL Extensions")),
@@ -277,14 +284,35 @@ def contradiction_penalty(features, latest, network=None, generic_gpu=False):
             penalty -= 0.15
         # else: no penalty — partial drift across browser updates is normal
 
-    # Generic GPU + cross-region IP = almost certainly different person.
-    # Without a real GPU string, iOS Safari users in different ISP regions
-    # are otherwise hard to separate.
-    if generic_gpu and network:
+    # Cross-region IP /16 penalty — catches false merges of two devices that
+    # share a stock GPU + stock OS image (Galaxy A vs Galaxy B, iPhone X vs
+    # iPhone Y, etc.) but are clearly in different regions.
+    if network:
         new_16 = features.get("ip_16_subnet")
         recent_16 = network.get("recent_ip_16", [])
         if new_16 and recent_16 and new_16 not in recent_16:
-            penalty -= 0.15
+            # Different ISP region + generic GPU → almost certainly different person
+            if generic_gpu:
+                penalty -= 0.15
+            else:
+                # Real GPU but cross-region: small base penalty.
+                # If canvas also drifts, double-down — two strong signals together.
+                penalty -= 0.05
+                if new_canvas and old_canvas:
+                    sim = canvas_similarity(new_canvas, old_canvas)
+                    if sim < 1.0:
+                        penalty -= 0.07   # adds up to -0.12 for this combo
+
+        # iOS canvas farbling clusters multiple users onto ~3-5 distinct vectors.
+        # When GPU is generic AND canvas matches PERFECTLY AND IP /24 is new,
+        # that pattern strongly suggests two different iPhones sharing a
+        # farbled canvas hash, not the same iPhone roaming.
+        if generic_gpu and new_canvas and old_canvas:
+            if canvas_similarity(new_canvas, old_canvas) == 1.0:
+                new_24 = features.get("ip_subnet")
+                recent_24 = network.get("recent_ip_subnets", [])
+                if new_24 and recent_24 and new_24 not in recent_24:
+                    penalty -= 0.10
 
     return penalty
 
@@ -336,11 +364,7 @@ def score_profile(features, profile):
         tier2 += w["webgl_caps_hash"] * _eq(features.get("webgl_caps_hash"), latest["webgl_caps_hash"])
         tier2 += w["webgl_ext_hash"]  * _eq(features.get("webgl_ext_hash"),  latest["webgl_ext_hash"])
         tier2 += w["audio"]           * _eq(features.get("audio_hash"),      latest["audio_hash"])
-
-        # Canvas — boost weight by 1.5x when GPU is generic (it's the only
-        # remaining hardware-leaning signal on iOS Safari)
-        canvas_w = w["canvas"] * (1.5 if generic_gpu else 1.0)
-        tier2 += canvas_w * canvas_similarity(features.get("canvas_hash"), latest.get("canvas_hash"))
+        tier2 += w["canvas"]          * canvas_similarity(features.get("canvas_hash"), latest.get("canvas_hash"))
 
     # ─────────────────────────────────────────────
     # TIER 3 — Browser (fonts, voices, UA, locale, version)
@@ -384,10 +408,6 @@ def score_profile(features, profile):
         tier3 += w["color_depth"] * _eq(features.get("color_depth"), latest["color_depth"])
         tier3 += w["pixel_ratio"] * _eq(features.get("pixel_ratio"), latest["pixel_ratio"])
 
-    # When GPU is generic, browser-level signals become primary — boost 1.3x
-    if generic_gpu:
-        tier3 *= 1.3
-
     s = tier1 + tier2 + tier3
     s *= time_decay(profile["last_seen_at"])
     s += contradiction_penalty(features, latest, network=network, generic_gpu=generic_gpu)
@@ -405,18 +425,29 @@ THRESHOLD_HIGH = 0.93
 THRESHOLD_GRAY = 0.75
 
 # When the visitor's GPU is generic (iOS Safari, RFP, software), the hardware
-# tier is uninformative — require a higher score to claim a match.
-THRESHOLD_HIGH_GENERIC = 0.96
+# tier is uninformative — but raising the threshold too far also blocks legit
+# revisits (perfect iOS revisit scores ~0.86). Set it just above that, paired
+# with stricter gray-zone anchor logic to prevent cross-user merges.
+THRESHOLD_HIGH_GENERIC = 0.88
 
 
 def _gray_zone_anchor_ok(features, profile):
+    """Permit gray-zone match only when anchor signals corroborate.
+    For generic GPU (iOS Safari, etc.) font_hash is uniform across all users,
+    so require BOTH IP /24 AND voice_hash match — much stricter."""
     network = profile["network_profile"]
     stable  = profile["stable_profile"]
-    if features.get("ip_subnet") and features["ip_subnet"] in network.get("recent_ip_subnets", []):
-        return True
-    if features.get("font_hash") and features["font_hash"] in stable.get("font_modes", []):
-        return True
-    return False
+    generic = is_generic_renderer(features.get("webgl_renderer"))
+
+    ip_match    = bool(features.get("ip_subnet")  and features["ip_subnet"]  in network.get("recent_ip_subnets", []))
+    font_match  = bool(features.get("font_hash")  and features["font_hash"]  in stable.get("font_modes", []))
+    voice_match = bool(features.get("voice_hash") and features["voice_hash"] in stable.get("voice_modes", []))
+
+    if generic:
+        # iOS: font_hash is identical across iPhones — useless as anchor.
+        # Require IP /24 AND voice_hash both match.
+        return ip_match and voice_match
+    return ip_match or font_match
 
 
 def match_or_create(signals, headers, ip, fp_pro_visitor_id=None, fp_pro_request_id=None):
