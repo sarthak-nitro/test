@@ -179,10 +179,19 @@ export async function getFingerprint() {
                     browserId:  data.browser_id,
                     matchScore: data.match_score,
                     isNew:      data.is_new_browser,
-                    visitId:    data.visit_id
+                    visitId:    data.visit_id,
+                    fpProVisitorId: fpProVisitorId,
+                    fpProRequestId: fpProRequestId
                 };
                 window.NitroFingerprint = Object.assign(window.NitroFingerprint || {}, info);
-                try { console.log(); } catch (_) { }
+                try {
+                    console.log('[NitroFingerprint] browserId:',       data.browser_id);
+                    console.log('[NitroFingerprint] matchScore:',      data.match_score);
+                    console.log('[NitroFingerprint] isNew:',           data.is_new_browser);
+                    console.log('[NitroFingerprint] visitId:',         data.visit_id);
+                    console.log('[NitroFingerprint] fpProVisitorId:',  fpProVisitorId);
+                    console.log('[NitroFingerprint] fpProRequestId:',  fpProRequestId);
+                } catch (_) { }
             }
         } catch (err) {
             console.error('Collect failed:', err);
