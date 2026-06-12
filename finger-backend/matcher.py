@@ -284,24 +284,32 @@ def contradiction_penalty(features, latest, network=None, generic_gpu=False):
             penalty -= 0.15
         # else: no penalty — partial drift across browser updates is normal
 
-    # Cross-region IP /16 penalty — catches false merges of two devices that
-    # share a stock GPU + stock OS image (Galaxy A vs Galaxy B, iPhone X vs
-    # iPhone Y, etc.) but are clearly in different regions.
+    # Cross-region IP /16 penalty — purely signal-based, no GPU classification.
+    # Logic: a different /16 + identical canvas/fonts/voices = either OS-image
+    # collision (different person on same stock OEM build) OR same person
+    # roaming. The signal pattern alone tells us which is more likely.
     if network:
         new_16 = features.get("ip_16_subnet")
         recent_16 = network.get("recent_ip_16", [])
         if new_16 and recent_16 and new_16 not in recent_16:
-            # Different ISP region + generic GPU → almost certainly different person
+            # Base cross-region penalty — always applies when /16 mismatches
+            penalty -= 0.08
+
+            # Stronger penalty in two data-derived cases:
             if generic_gpu:
-                penalty -= 0.15
-            else:
-                # Real GPU but cross-region: small base penalty.
-                # If canvas also drifts, double-down — two strong signals together.
-                penalty -= 0.05
-                if new_canvas and old_canvas:
-                    sim = canvas_similarity(new_canvas, old_canvas)
-                    if sim < 1.0:
-                        penalty -= 0.07   # adds up to -0.12 for this combo
+                # Generic GPU = iOS Safari / RFP. Hardware tier already weak,
+                # cross-region is strong signal of different person.
+                penalty -= 0.07            # = -0.15 total
+            elif new_canvas and old_canvas:
+                sim = canvas_similarity(new_canvas, old_canvas)
+                if sim == 1.0:
+                    # Same canvas + different /16 = OEM-image collision pattern.
+                    # If they were the same person roaming, canvas drift is normal.
+                    # Perfect match across regions is suspicious.
+                    penalty -= 0.07        # = -0.15 total
+                elif sim < 1.0:
+                    # Canvas drifted AND /16 changed: strong evidence of different device.
+                    penalty -= 0.04        # = -0.12 total
 
         # iOS canvas farbling clusters multiple users onto ~3-5 distinct vectors.
         # When GPU is generic AND canvas matches PERFECTLY AND IP /24 is new,
@@ -433,21 +441,22 @@ THRESHOLD_HIGH_GENERIC = 0.88
 
 def _gray_zone_anchor_ok(features, profile):
     """Permit gray-zone match only when anchor signals corroborate.
-    For generic GPU (iOS Safari, etc.) font_hash is uniform across all users,
-    so require BOTH IP /24 AND voice_hash match — much stricter."""
+    font_hash is uniform across stock Android/iOS users — useless as anchor.
+    For generic GPU we additionally require voice_hash to match (stricter)."""
     network = profile["network_profile"]
     stable  = profile["stable_profile"]
     generic = is_generic_renderer(features.get("webgl_renderer"))
 
     ip_match    = bool(features.get("ip_subnet")  and features["ip_subnet"]  in network.get("recent_ip_subnets", []))
-    font_match  = bool(features.get("font_hash")  and features["font_hash"]  in stable.get("font_modes", []))
     voice_match = bool(features.get("voice_hash") and features["voice_hash"] in stable.get("voice_modes", []))
 
     if generic:
-        # iOS: font_hash is identical across iPhones — useless as anchor.
-        # Require IP /24 AND voice_hash both match.
+        # iOS: hardware tier weak — IP /24 alone too weak, need voice too.
         return ip_match and voice_match
-    return ip_match or font_match
+    # Non-generic: IP /24 match required. font_hash dropped because it's
+    # identical across all stock Android phones — used to false-merge
+    # different Adreno chips on different networks.
+    return ip_match
 
 
 def match_or_create(signals, headers, ip, fp_pro_visitor_id=None, fp_pro_request_id=None):
