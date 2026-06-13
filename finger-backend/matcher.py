@@ -150,12 +150,12 @@ def normalize(signals, headers, ip):
 WEIGHTS = {
     "ja4":             0.08,
     "h2fp":            0.05,
-    "webgl_renderer":  0.08,
+    "webgl_renderer":  0.13,   # was 0.08 — raw PCI-ID string is the per-machine discriminator
     "webgl_vendor":    0.03,
-    "webgl_render":    0.10,
+    "webgl_render":    0.00,   # was 0.10 — vendor-shared hash, no model entropy; killed
     "webgl_caps_hash": 0.03,
     "webgl_ext_hash":  0.02,
-    "font_jaccard":    0.08,
+    "font_jaccard":    0.06,   # was 0.08 — stock-OS font lists collide across machines
     "voice_jaccard":   0.06,
     "voice_count":     0.02,
     "ua":              0.04,
@@ -164,14 +164,14 @@ WEIGHTS = {
     "vendor":          0.01,
     "timezone":        0.02,
     "language":        0.01,
-    "intl":            0.02,
+    "intl":            0.04,   # was 0.02 — locale formatting varies more than expected
     "touch":           0.01,
     "cookie":          0.01,
     "motion":          0.01,
     "color_depth":     0.005,
     "pixel_ratio":     0.005,
-    "audio":           0.10,
-    "canvas":          0.08,
+    "audio":           0.07,   # was 0.10 — bucketed value "124" near-ubiquitous
+    "canvas":          0.10,   # was 0.08 — boost the real hardware discriminator
     "ip_24":           0.05,
     "ip_16":           0.03,
 }
