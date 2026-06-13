@@ -135,6 +135,9 @@ def normalize(signals, headers, ip):
         # noisy
         "audio_hash":  signals.get("Audio"),
         "canvas_hash": signals.get("Canvas"),
+        # automation + audio hardware path
+        "webdriver":     1 if signals.get("Webdriver") else 0,
+        "audio_latency": signals.get("Audio Latency"),
         # network context
         "ip_raw":       ip,
         "ip_subnet":    sub24,
@@ -159,7 +162,8 @@ WEIGHTS = {
     "voice_jaccard":   0.06,
     "voice_count":     0.02,
     "ua":              0.04,
-    "version_combo":   0.03,
+    "version_combo":     0.02,   # was 0.03 — now covers only css + event_handler_count
+    "constructor_count": 0.05,   # NEW — highest-entropy signal on iOS (33 distinct across 54 visitors)
     "platform":        0.02,
     "vendor":          0.01,
     "timezone":        0.02,
@@ -170,27 +174,68 @@ WEIGHTS = {
     "motion":          0.01,
     "color_depth":     0.005,
     "pixel_ratio":     0.005,
-    "audio":           0.07,   # was 0.10 — bucketed value "124" near-ubiquitous
+    "audio":           0.05,   # was 0.07 — reduced; audio_latency now covers part of this
+    "audio_latency":   0.04,   # NEW — AudioContext.baseLatency, distinct per browser/audio path
+    "webdriver":       0.04,   # NEW — automation flag positive-credit when both sides agree
     "canvas":          0.10,   # was 0.08 — boost the real hardware discriminator
     "ip_24":           0.05,
     "ip_16":           0.03,
 }
 
 
+# Weight overrides applied when GPU is generic (iOS Safari / RFP / SwiftShader).
+# On iPhones the iOS query showed font/audio/ua_family have ZERO entropy across
+# 54 visitors (1 distinct value each) — leaving them at default weight gives
+# every iPhone-vs-iPhone pair ~0.15 of free credit. We redistribute that weight
+# to signals with real entropy on iOS: constructor_count (33 distinct), canvas
+# (10 distinct), ip_16 (42 distinct), intl (3 distinct).
+GENERIC_GPU_OVERRIDES = {
+    "font_jaccard":      0.00,   # was 0.06 — uniform across all stock iPhones
+    "audio":             0.00,   # was 0.05 — uniform "124" on iOS
+    "ua":                0.00,   # was 0.04 — all iPhones report same UA family
+    "voice_jaccard":     0.02,   # was 0.06 — only 4 variants on iOS
+    "canvas":            0.18,   # was 0.10 — biggest discriminator left
+    "constructor_count": 0.10,   # was 0.05 — 33 distinct on iOS, highest entropy
+    "ip_16":             0.06,   # was 0.03 — 42 distinct on iOS
+    "intl":              0.05,   # was 0.04 — small boost
+}
+
+
+def effective_weights(generic_gpu):
+    """Return WEIGHTS with iOS overrides applied when GPU is masked/generic."""
+    if not generic_gpu:
+        return WEIGHTS
+    w = dict(WEIGHTS)
+    w.update(GENERIC_GPU_OVERRIDES)
+    return w
+
+
 def _eq(a, b):
     return 1.0 if a is not None and a == b else 0.0
 
 
+CANVAS_POSITION_WEIGHTS = [0.35, 0.15, 0.35, 0.15]
+# pos 0 = text rendering (sub-pixel hinting, font cache) — discriminates users
+# pos 1 = bezier curves — stable across same-vendor GPUs (low entropy)
+# pos 2 = linear gradient — discriminates between chip generations (shader math)
+# pos 3 = shadow blur — stable across same-vendor GPUs (low entropy)
+
+
 def canvas_similarity(a, b):
-    """0.0-1.0 score across colon-joined sub-hashes.
+    """0.0-1.0 weighted score across colon-joined sub-hashes.
     Backwards-compatible: if one side is old single-hash, falls back to exact match."""
     if not a or not b:
         return 0.0
     pa, pb = a.split(":"), b.split(":")
     if len(pa) != len(pb):
         return 1.0 if a == b else 0.0
-    matches = sum(1 for x, y in zip(pa, pb) if x == y)
-    return matches / len(pa)
+    # If position count doesn't match our weight table, fall back to equal weighting
+    if len(pa) != len(CANVAS_POSITION_WEIGHTS):
+        return sum(1 for x, y in zip(pa, pb) if x == y) / len(pa)
+    return sum(
+        CANVAS_POSITION_WEIGHTS[i] * (1.0 if pa[i] == pb[i] else 0.0)
+        for i in range(len(pa))
+    )
 
 
 def jaccard(a, b):
@@ -199,6 +244,22 @@ def jaccard(a, b):
     inter = len(a & b)
     union = len(a | b)
     return inter / union if union else 0.0
+
+
+def constructor_count_score(new, old, tol=5):
+    """Tolerance-based match for window-constructor count.
+    Same browser drifts 5-10 across visits (devtools state, JS engine warmup);
+    different browsers on same device differ by 5+; cross-user differs by 20+."""
+    if new is None or old is None:
+        return 0.0
+    try:
+        diff = abs(int(new) - int(old))
+    except (TypeError, ValueError):
+        return 0.0
+    if diff == 0:    return 1.0
+    if diff <= tol:  return 0.7
+    if diff <= 20:   return 0.3
+    return 0.0
 
 
 def ua_score(new_fam, new_major, old_fam, old_major):
@@ -276,6 +337,14 @@ def contradiction_penalty(features, latest, network=None, generic_gpu=False):
     if new_plat and old_plat and new_plat != old_plat:
         penalty -= 0.30
 
+    # Bot vs real user is a strong contradiction — never merge across this boundary.
+    # Tri-state: only apply when both sides explicitly sent the signal.
+    _old_wd_raw = (latest.get("raw_signals") or {}).get("Webdriver")
+    old_wd = 1 if _old_wd_raw is True else (0 if _old_wd_raw is False else None)
+    new_wd = features.get("webdriver")
+    if old_wd is not None and new_wd is not None and old_wd != new_wd:
+        penalty -= 0.20
+
     new_canvas = features.get("canvas_hash")
     old_canvas = latest.get("canvas_hash")
     if new_canvas and old_canvas:
@@ -334,9 +403,10 @@ def score_profile(features, profile):
     network = profile["network_profile"]
     latest  = db.latest_visit(profile["browser_id"])
 
-    w = WEIGHTS
     f_webgl = features.get("webgl_renderer")
     generic_gpu = is_generic_renderer(f_webgl)
+    # iOS-tuned weight profile when GPU is generic (kills dead-credit signals).
+    w = effective_weights(generic_gpu)
 
     # ─────────────────────────────────────────────
     # TIER 1 — Network (JA4, H2FP, IP /24, IP /16)
@@ -374,6 +444,11 @@ def score_profile(features, profile):
         tier2 += w["audio"]           * _eq(features.get("audio_hash"),      latest["audio_hash"])
         tier2 += w["canvas"]          * canvas_similarity(features.get("canvas_hash"), latest.get("canvas_hash"))
 
+        # audio_latency lives only in raw_signals (no dedicated column)
+        _latest_signals_t2 = latest["raw_signals"] or {}
+        old_audio_lat = _latest_signals_t2.get("Audio Latency")
+        tier2 += w["audio_latency"] * _eq(features.get("audio_latency"), old_audio_lat)
+
     # ─────────────────────────────────────────────
     # TIER 3 — Browser (fonts, voices, UA, locale, version)
     # Purpose: tie-breaker. Boosted when GPU is generic.
@@ -387,18 +462,23 @@ def score_profile(features, profile):
                                               _csv_set(latest_signals.get("Speech Voices")))
         tier3 += w["voice_count"]   * _eq(features.get("voice_count"), latest["voice_count"])
 
+        # version_combo now covers only css_supports + event_handler_count.
+        # constructor_count moved out to its own fuzzy-match weight (higher entropy).
         version_matches = sum(
             1 for a, b in zip(
                 (features.get("css_supports_hash"),
-                 features.get("constructor_count"),
                  features.get("event_handler_count")),
                 (latest["css_supports_hash"],
-                 latest["constructor_count"],
                  latest["event_handler_count"]),
             )
             if a is not None and a == b
         )
-        tier3 += w["version_combo"] * (version_matches / 3.0)
+        tier3 += w["version_combo"] * (version_matches / 2.0)
+
+        # constructor_count: tolerance-based; drifts 5-10 within same browser.
+        tier3 += w["constructor_count"] * constructor_count_score(
+            features.get("constructor_count"), latest.get("constructor_count")
+        )
 
         tier3 += w["ua"] * ua_score(
             features.get("ua_family"), features.get("ua_major"),
@@ -412,6 +492,13 @@ def score_profile(features, profile):
         tier3 += w["intl"]        * _eq(features.get("intl_hash"),   latest["intl_hash"])
         tier3 += w["touch"]       * _eq(features.get("max_touch_bucket"), latest["max_touch_bucket"])
         tier3 += w["cookie"]      * _eq(1 if features.get("cookie_enabled") else 0, latest["cookie_enabled"])
+
+        # webdriver positive-credit (mismatch handled in contradiction_penalty).
+        # Read from raw_signals; tri-state because key may be absent on old visits.
+        _old_wd_raw = (latest["raw_signals"] or {}).get("Webdriver")
+        old_wd = 1 if _old_wd_raw is True else (0 if _old_wd_raw is False else None)
+        if old_wd is not None:
+            tier3 += w["webdriver"] * _eq(features.get("webdriver"), old_wd)
         tier3 += w["motion"]      * _eq(1 if features.get("reduced_motion") else 0, latest["reduced_motion"])
         tier3 += w["color_depth"] * _eq(features.get("color_depth"), latest["color_depth"])
         tier3 += w["pixel_ratio"] * _eq(features.get("pixel_ratio"), latest["pixel_ratio"])
@@ -449,14 +536,16 @@ def _gray_zone_anchor_ok(features, profile):
 
     ip_match    = bool(features.get("ip_subnet")  and features["ip_subnet"]  in network.get("recent_ip_subnets", []))
     voice_match = bool(features.get("voice_hash") and features["voice_hash"] in stable.get("voice_modes", []))
+    webgl_exact = bool(features.get("webgl_renderer") and features["webgl_renderer"] in stable.get("webgl_modes", []))
 
     if generic:
         # iOS: hardware tier weak — IP /24 alone too weak, need voice too.
         return ip_match and voice_match
-    # Non-generic: IP /24 match required. font_hash dropped because it's
-    # identical across all stock Android phones — used to false-merge
-    # different Adreno chips on different networks.
-    return ip_match
+    # Non-generic: require IP /24 AND exact webgl_renderer match. Previously
+    # IP /24 alone was enough, but that false-merged multiple Intel laptops
+    # in the same office (different PCI IDs, same /24). Exact GPU string
+    # match prevents this while still allowing legit revisits.
+    return ip_match and webgl_exact
 
 
 def match_or_create(signals, headers, ip, fp_pro_visitor_id=None, fp_pro_request_id=None):

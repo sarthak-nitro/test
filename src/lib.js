@@ -45,6 +45,20 @@ export async function getFingerprint() {
     // Audio
     signals['Audio'] = await getAudioFingerprint();
 
+    // Automation flag — false in real browsers, true under Selenium/Puppeteer/Playwright
+    signals['Webdriver'] = !!navigator.webdriver;
+
+    // AudioContext.baseLatency — distinct per browser/audio path (Firefox returns 0)
+    signals['Audio Latency'] = (() => {
+        try {
+            const AC = window.AudioContext || window['webkitAudioContext'];
+            const c = new AC();
+            const v = c.baseLatency;
+            c.close();
+            return v;
+        } catch (e) { return null; }
+    })();
+
     // WebGL Render (GPU pixel-level fingerprint)
     signals['WebGL Render'] = getWebGLRenderFingerprint();
 
