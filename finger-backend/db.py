@@ -24,14 +24,17 @@ CREATE TABLE IF NOT EXISTS browser_profiles (
   webgl_renderer        TEXT,
   font_hash             TEXT,
   voice_hash            TEXT,
+  audio_hash            TEXT,
   stable_profile        JSONB NOT NULL,
   semi_stable_profile   JSONB NOT NULL,
   network_profile       JSONB NOT NULL
 );
+ALTER TABLE browser_profiles ADD COLUMN IF NOT EXISTS audio_hash TEXT;
 CREATE INDEX IF NOT EXISTS idx_prof_ja4       ON browser_profiles(ja4);
 CREATE INDEX IF NOT EXISTS idx_prof_webgl     ON browser_profiles(webgl_renderer);
 CREATE INDEX IF NOT EXISTS idx_prof_font      ON browser_profiles(font_hash);
 CREATE INDEX IF NOT EXISTS idx_prof_voice     ON browser_profiles(voice_hash);
+CREATE INDEX IF NOT EXISTS idx_prof_audio     ON browser_profiles(audio_hash);
 CREATE INDEX IF NOT EXISTS idx_prof_last_seen ON browser_profiles(last_seen_at);
 
 CREATE TABLE IF NOT EXISTS visits (
@@ -112,7 +115,13 @@ def fetch_candidates(features, lookback_days=90):
             """
             SELECT * FROM browser_profiles
              WHERE last_seen_at > %s
-               AND (ja4 = %s OR webgl_renderer = %s OR font_hash = %s OR voice_hash = %s)
+               AND (
+                 ja4 = %s
+                 OR webgl_renderer = %s
+                 OR font_hash = %s
+                 OR voice_hash = %s
+                 OR audio_hash = %s
+               )
             """,
             (
                 cutoff,
@@ -120,6 +129,7 @@ def fetch_candidates(features, lookback_days=90):
                 features.get("webgl_renderer"),
                 features.get("font_hash"),
                 features.get("voice_hash"),
+                features.get("audio_hash"),
             ),
         ).fetchall()
 
@@ -206,14 +216,15 @@ def create_profile(browser_id, features, score):
             """
             INSERT INTO browser_profiles (
               browser_id, first_seen_at, last_seen_at, visit_count, current_confidence,
-              ja4, webgl_renderer, font_hash, voice_hash,
+              ja4, webgl_renderer, font_hash, voice_hash, audio_hash,
               stable_profile, semi_stable_profile, network_profile
-            ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+            ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
             """,
             (
                 browser_id, now, now, 1, score,
                 features.get("ja4"), features.get("webgl_renderer"),
                 features.get("font_hash"), features.get("voice_hash"),
+                features.get("audio_hash"),
                 Jsonb(stable), Jsonb(semi), Jsonb(network),
             ),
         )
@@ -267,6 +278,7 @@ def update_profile(browser_id, features, score):
               webgl_renderer      = COALESCE(%s, webgl_renderer),
               font_hash           = COALESCE(%s, font_hash),
               voice_hash          = COALESCE(%s, voice_hash),
+              audio_hash          = COALESCE(%s, audio_hash),
               stable_profile      = %s,
               semi_stable_profile = %s,
               network_profile     = %s
@@ -276,6 +288,7 @@ def update_profile(browser_id, features, score):
                 int(time.time()), new_conf,
                 features.get("ja4"), features.get("webgl_renderer"),
                 features.get("font_hash"), features.get("voice_hash"),
+                features.get("audio_hash"),
                 Jsonb(stable), Jsonb(semi), Jsonb(network),
                 browser_id,
             ),

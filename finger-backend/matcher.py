@@ -70,6 +70,48 @@ def touch_bucket(n):
     return "5+"
 
 
+CSS_MEDIA_KEYS = (
+    "Prefers Color Scheme Dark", "Prefers Contrast More", "Forced Colors",
+    "Dynamic Range High", "Color Gamut P3", "Color Gamut Rec2020",
+    "Pointer Coarse", "Hover Hover", "Display Mode Standalone",
+)
+
+
+def screen_res_from(s):
+    sw, sh = s.get("Screen Width"), s.get("Screen Height")
+    return f"{sw}x{sh}" if sw and sh else None
+
+
+def avail_res_from(s):
+    aw, ah = s.get("Screen Avail Width"), s.get("Screen Avail Height")
+    return f"{aw}x{ah}" if aw and ah else None
+
+
+def css_media_hash_from(s):
+    if not any(k in s for k in CSS_MEDIA_KEYS):
+        return None
+    return _sha1("|".join(str(s.get(k, "")) for k in CSS_MEDIA_KEYS))
+
+
+def _bucket_100(v):
+    try:
+        return int(v) // 100 * 100
+    except (TypeError, ValueError):
+        return None
+
+
+def inner_win_from(s):
+    iw = _bucket_100(s.get("Inner Width"))
+    ih = _bucket_100(s.get("Inner Height"))
+    return f"{iw}x{ih}" if iw is not None and ih is not None else None
+
+
+def outer_win_from(s):
+    ow = _bucket_100(s.get("Outer Width"))
+    oh = _bucket_100(s.get("Outer Height"))
+    return f"{ow}x{oh}" if ow is not None and oh is not None else None
+
+
 def webgl_caps_hash(s):
     parts = [
         s.get("WebGL Max Texture Size"),
@@ -132,6 +174,11 @@ def normalize(signals, headers, ip):
         "reduced_motion":   signals.get("Reduced Motion"),
         "color_depth":      signals.get("Color Depth"),
         "pixel_ratio":      round(float(signals.get("Pixel Ratio") or 0), 1) or None,
+        "screen_res":       screen_res_from(signals),
+        "avail_res":        avail_res_from(signals),
+        "css_media_hash":   css_media_hash_from(signals),
+        "inner_win":        inner_win_from(signals),
+        "outer_win":        outer_win_from(signals),
         # noisy
         "audio_hash":  signals.get("Audio"),
         "canvas_hash": signals.get("Canvas"),
@@ -174,6 +221,11 @@ WEIGHTS = {
     "motion":          0.01,
     "color_depth":     0.005,
     "pixel_ratio":     0.005,
+    "screen_res":      0.05,   # per-monitor; very stable across visits
+    "avail_res":       0.03,   # OS dock/taskbar offset — per-machine
+    "css_media_hash":  0.02,   # color-scheme, gamut, pointer, hover, etc.
+    "inner_win":       0.01,   # bucketed window inner dims — noisy, low weight
+    "outer_win":       0.005,  # bucketed window outer dims — even noisier
     "audio":           0.05,   # was 0.07 — reduced; audio_latency now covers part of this
     "audio_latency":   0.04,   # NEW — AudioContext.baseLatency, distinct per browser/audio path
     "webdriver":       0.04,   # NEW — automation flag positive-credit when both sides agree
@@ -345,6 +397,14 @@ def contradiction_penalty(features, latest, network=None, generic_gpu=False):
     if old_wd is not None and new_wd is not None and old_wd != new_wd:
         penalty -= 0.20
 
+    # Screen resolution mismatch on a "returning" visitor = different physical
+    # monitor → strong evidence of a different machine. Skip when either side
+    # is missing (old profile pre-dates this signal).
+    new_res = features.get("screen_res")
+    old_res = screen_res_from(latest.get("raw_signals") or {})
+    if new_res and old_res and new_res != old_res:
+        penalty -= 0.12
+
     new_canvas = features.get("canvas_hash")
     old_canvas = latest.get("canvas_hash")
     if new_canvas and old_canvas:
@@ -502,6 +562,12 @@ def score_profile(features, profile):
         tier3 += w["motion"]      * _eq(1 if features.get("reduced_motion") else 0, latest["reduced_motion"])
         tier3 += w["color_depth"] * _eq(features.get("color_depth"), latest["color_depth"])
         tier3 += w["pixel_ratio"] * _eq(features.get("pixel_ratio"), latest["pixel_ratio"])
+
+        tier3 += w["screen_res"]     * _eq(features.get("screen_res"),     screen_res_from(latest_signals))
+        tier3 += w["avail_res"]      * _eq(features.get("avail_res"),      avail_res_from(latest_signals))
+        tier3 += w["css_media_hash"] * _eq(features.get("css_media_hash"), css_media_hash_from(latest_signals))
+        tier3 += w["inner_win"]      * _eq(features.get("inner_win"),      inner_win_from(latest_signals))
+        tier3 += w["outer_win"]      * _eq(features.get("outer_win"),      outer_win_from(latest_signals))
 
     s = tier1 + tier2 + tier3
     s *= time_decay(profile["last_seen_at"])

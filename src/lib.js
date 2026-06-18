@@ -25,6 +25,14 @@ export async function getFingerprint() {
     // Screen
     signals['Color Depth'] = screen.colorDepth;
     signals['Pixel Ratio'] = window.devicePixelRatio;
+    signals['Screen Width'] = screen.width;
+    signals['Screen Height'] = screen.height;
+    signals['Screen Avail Width'] = screen.availWidth;
+    signals['Screen Avail Height'] = screen.availHeight;
+    signals['Inner Width'] = window.innerWidth;
+    signals['Inner Height'] = window.innerHeight;
+    signals['Outer Width'] = window.outerWidth;
+    signals['Outer Height'] = window.outerHeight;
 
     // Timezone
     signals['Timezone'] = Intl.DateTimeFormat().resolvedOptions().timeZone;

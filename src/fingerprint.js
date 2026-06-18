@@ -361,9 +361,61 @@ export function getIntlFingerprint() {
 // --- Font detection ---
 export function getDetectedFonts() {
     const testFonts = [
-        'Arial', 'Courier New', 'Georgia', 'Helvetica', 'Times New Roman',
-        'Verdana', 'Comic Sans MS', 'Impact', 'Trebuchet MS', 'Palatino',
-        'Lucida Console', 'Tahoma', 'Monaco', 'Menlo', 'Consolas'
+        // Windows system fonts
+        'Arial', 'Arial Black', 'Arial Narrow', 'Bahnschrift', 'Calibri', 'Cambria',
+        'Cambria Math', 'Candara', 'Comic Sans MS', 'Consolas', 'Constantia', 'Corbel',
+        'Courier New', 'Ebrima', 'Franklin Gothic Medium', 'Gabriola', 'Gadugi',
+        'Georgia', 'Impact', 'Ink Free', 'Javanese Text', 'Leelawadee UI',
+        'Lucida Console', 'Lucida Sans Unicode', 'Malgun Gothic', 'Marlett',
+        'Microsoft Himalaya', 'Microsoft JhengHei', 'Microsoft New Tai Lue',
+        'Microsoft PhagsPa', 'Microsoft Sans Serif', 'Microsoft Tai Le',
+        'Microsoft YaHei', 'Microsoft Yi Baiti', 'MingLiU-ExtB', 'Mongolian Baiti',
+        'MS Gothic', 'MS Mincho', 'MV Boli', 'Myanmar Text', 'Nirmala UI',
+        'Palatino Linotype', 'Segoe MDL2 Assets', 'Segoe Print', 'Segoe Script',
+        'Segoe UI', 'Segoe UI Emoji', 'Segoe UI Historic', 'Segoe UI Symbol',
+        'SimSun', 'SimHei', 'NSimSun', 'Sitka', 'Sylfaen', 'Symbol', 'Tahoma',
+        'Times New Roman', 'Trebuchet MS', 'Verdana', 'Webdings', 'Wingdings',
+        'Yu Gothic', 'Yu Mincho',
+        // macOS system fonts
+        'American Typewriter', 'Andale Mono', 'Apple Chancery', 'Apple Color Emoji',
+        'Apple SD Gothic Neo', 'AppleGothic', 'AppleMyungjo', 'Arial Hebrew',
+        'Arial Rounded MT Bold', 'Arial Unicode MS', 'Avenir', 'Avenir Next',
+        'Avenir Next Condensed', 'Ayuthaya', 'Baghdad', 'Baskerville', 'Beirut',
+        'Big Caslon', 'Bodoni 72', 'Bradley Hand', 'Brush Script MT', 'Chalkboard',
+        'Chalkboard SE', 'Chalkduster', 'Charter', 'Cochin', 'Copperplate', 'Courier',
+        'Damascus', 'Devanagari MT', 'DIN Alternate', 'DIN Condensed', 'Euphemia UCAS',
+        'Farah', 'Farisi', 'Futura', 'Geeza Pro', 'Geneva', 'Gill Sans', 'Gujarati MT',
+        'Gurmukhi MN', 'Hannotate SC', 'HanziPen SC', 'Helvetica', 'Helvetica Neue',
+        'Herculanum', 'Hiragino Kaku Gothic', 'Hiragino Maru Gothic Pro',
+        'Hiragino Mincho ProN', 'Hiragino Sans', 'Hoefler Text', 'Inai Mathi',
+        'Iowan Old Style', 'Kailasa', 'Kannada MN', 'Kefa', 'Khmer Sangam MN',
+        'Kohinoor Bangla', 'Kohinoor Devanagari', 'Kohinoor Telugu', 'Krungthep',
+        'Lao Sangam MN', 'Lucida Grande', 'Luminari', 'Malayalam MN', 'Marker Felt',
+        'Menlo', 'Mishafi', 'Monaco', 'Mukta Mahee', 'Myanmar MN', 'Nadeem',
+        'New Peninim MT', 'Noteworthy', 'Noto Nastaliq Urdu', 'Optima', 'Oriya MN',
+        'Palatino', 'Papyrus', 'Phosphate', 'Plantagenet Cherokee', 'PT Mono',
+        'PT Sans', 'PT Serif', 'Raanana', 'Rockwell', 'Sana', 'Sathu', 'Savoye LET',
+        'SignPainter', 'Silom', 'Sinhala MN', 'Skia', 'Snell Roundhand', 'Songti SC',
+        'STIX Two Math', 'Sukhumvit Set', 'Tamil MN', 'Telugu MN', 'Thonburi',
+        'Times', 'Trattatello', 'Waseem', 'Zapf Dingbats', 'Zapfino',
+        // Linux / Noto / Liberation
+        'Bitstream Charter', 'Bitstream Vera Sans', 'Bitstream Vera Sans Mono',
+        'Bitstream Vera Serif', 'DejaVu Sans', 'DejaVu Sans Mono', 'DejaVu Serif',
+        'Liberation Mono', 'Liberation Sans', 'Liberation Serif', 'Nimbus Mono L',
+        'Nimbus Roman No9 L', 'Nimbus Sans L', 'Noto Color Emoji', 'Noto Sans',
+        'Noto Sans CJK JP', 'Noto Sans CJK KR', 'Noto Sans CJK SC', 'Noto Sans CJK TC',
+        'Noto Serif', 'OpenSymbol', 'Sawasdee', 'Tlwg Typo', 'Ubuntu',
+        'Ubuntu Condensed', 'Ubuntu Mono', 'URW Bookman L', 'URW Chancery L',
+        'URW Gothic L', 'URW Palladio L',
+        // Programming / web / brand fonts
+        'Anonymous Pro', 'Cascadia Code', 'Cascadia Mono', 'Cousine', 'Dank Mono',
+        'Droid Sans', 'Droid Sans Mono', 'Droid Serif', 'Fira Code', 'Fira Mono',
+        'Fira Sans', 'Hack', 'IBM Plex Mono', 'IBM Plex Sans', 'IBM Plex Serif',
+        'Inconsolata', 'Input Mono', 'Iosevka', 'JetBrains Mono', 'Lato',
+        'Merriweather', 'Montserrat', 'Nunito', 'Open Sans', 'Operator Mono',
+        'Oswald', 'Overpass', 'Poppins', 'Raleway', 'Roboto', 'Roboto Condensed',
+        'Roboto Mono', 'Roboto Slab', 'Source Code Pro', 'Source Han Sans',
+        'Source Sans Pro', 'Source Serif Pro', 'Work Sans'
     ];
     const baseFonts = ['monospace', 'sans-serif', 'serif'];
     const testStr = 'mmmmmmmmmmlli';
