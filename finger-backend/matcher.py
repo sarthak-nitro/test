@@ -548,7 +548,7 @@ def _gray_zone_anchor_ok(features, profile):
     return ip_match and webgl_exact
 
 
-def match_or_create(signals, headers, ip, fp_pro_visitor_id=None, fp_pro_request_id=None):
+def match_or_create(signals, headers, ip, fp_pro_visitor_id=None, fp_pro_request_id=None, domain=None):
     features = normalize(signals, headers, ip)
     log.debug(
         "normalized: ja4=%s h2fp=%s ua=%s/%s platform=%s webgl=%s font_hash=%s voice_hash=%s ip=%s",
@@ -603,6 +603,7 @@ def match_or_create(signals, headers, ip, fp_pro_visitor_id=None, fp_pro_request
         browser_id, features, best_score, is_new, signals, headers,
         fp_pro_visitor_id=fp_pro_visitor_id,
         fp_pro_request_id=fp_pro_request_id,
+        domain=domain,
     )
 
     log.info(

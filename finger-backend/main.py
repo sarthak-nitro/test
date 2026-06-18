@@ -109,6 +109,7 @@ class Handler(BaseHTTPRequestHandler):
         ip = self._client_ip()
         fp_pro_visitor_id = payload.get("fp_pro_visitor_id")
         fp_pro_request_id = payload.get("fp_pro_request_id")
+        domain = (payload.get("hostname") or "").strip().lower() or None
 
         log.info(
             "POST /collect: ip=%s signals=%d payload_keys=%s ja4=%s ja3_hash=%s h2fp_len=%d fp_pro=%s",
@@ -127,6 +128,7 @@ class Handler(BaseHTTPRequestHandler):
                 signals, headers, ip,
                 fp_pro_visitor_id=fp_pro_visitor_id,
                 fp_pro_request_id=fp_pro_request_id,
+                domain=domain,
             )
             status = 200
             log.info(

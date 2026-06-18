@@ -75,11 +75,15 @@ CREATE TABLE IF NOT EXISTS visits (
   raw_signals           JSONB NOT NULL,
   raw_headers           JSONB NOT NULL,
   fp_pro_visitor_id     TEXT,
-  fp_pro_request_id     TEXT
+  fp_pro_request_id     TEXT,
+  domain                TEXT
 );
-CREATE INDEX IF NOT EXISTS idx_visits_browser       ON visits(browser_id);
-CREATE INDEX IF NOT EXISTS idx_visits_seen          ON visits(seen_at);
+ALTER TABLE visits ADD COLUMN IF NOT EXISTS domain TEXT;
+CREATE INDEX IF NOT EXISTS idx_visits_browser        ON visits(browser_id);
+CREATE INDEX IF NOT EXISTS idx_visits_seen           ON visits(seen_at);
 CREATE INDEX IF NOT EXISTS idx_visits_fp_pro_visitor ON visits(fp_pro_visitor_id);
+CREATE INDEX IF NOT EXISTS idx_visits_domain         ON visits(domain);
+CREATE INDEX IF NOT EXISTS idx_visits_browser_domain ON visits(browser_id, domain);
 """
 
 _pool = None
@@ -129,7 +133,7 @@ def latest_visit(browser_id):
 
 
 def insert_visit(browser_id, features, match_score, is_new, raw_signals, raw_headers,
-                 fp_pro_visitor_id=None, fp_pro_request_id=None):
+                 fp_pro_visitor_id=None, fp_pro_request_id=None, domain=None):
     with _pool_handle().connection() as conn:
         row = conn.execute(
             """
@@ -145,8 +149,9 @@ def insert_visit(browser_id, features, match_score, is_new, raw_signals, raw_hea
               color_depth, pixel_ratio,
               ip_raw, ip_subnet, ip_16_subnet,
               raw_signals, raw_headers,
-              fp_pro_visitor_id, fp_pro_request_id
-            ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+              fp_pro_visitor_id, fp_pro_request_id,
+              domain
+            ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
             RETURNING visit_id
             """,
             (
@@ -172,6 +177,7 @@ def insert_visit(browser_id, features, match_score, is_new, raw_signals, raw_hea
                 features.get("ip_16_subnet"),
                 Jsonb(raw_signals), Jsonb(raw_headers),
                 fp_pro_visitor_id, fp_pro_request_id,
+                domain,
             ),
         ).fetchone()
         return row["visit_id"]

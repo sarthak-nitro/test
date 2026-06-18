@@ -7,13 +7,20 @@ export async function getFingerprint() {
     signals['User-Agent'] = navigator.userAgent;
     signals['Platform'] = navigator.platform;
     signals['Language'] = navigator.language;
-    // signals['CPU Cores'] = navigator.hardwareConcurrency;
-    // signals['Device Memory'] = navigator.deviceMemory || 'n/a';
     signals['Max Touch Points'] = navigator.maxTouchPoints;
     // signals['Do Not Track'] = navigator.doNotTrack || 'n/a';
     signals['Cookie Enabled'] = navigator.cookieEnabled;
     signals['Vendor'] = navigator.vendor || 'n/a';
     signals['Reduced Motion'] = matchMedia('(prefers-reduced-motion: reduce)').matches;
+    signals['Prefers Color Scheme Dark'] = matchMedia('(prefers-color-scheme: dark)').matches;
+    signals['Prefers Contrast More'] = matchMedia('(prefers-contrast: more)').matches;
+    signals['Forced Colors'] = matchMedia('(forced-colors: active)').matches;
+    signals['Dynamic Range High'] = matchMedia('(dynamic-range: high)').matches;
+    signals['Color Gamut P3'] = matchMedia('(color-gamut: p3)').matches;
+    signals['Color Gamut Rec2020'] = matchMedia('(color-gamut: rec2020)').matches;
+    signals['Pointer Coarse'] = matchMedia('(pointer: coarse)').matches;
+    signals['Hover Hover'] = matchMedia('(hover: hover)').matches;
+    signals['Display Mode Standalone'] = matchMedia('(display-mode: standalone)').matches;
 
     // Screen
     signals['Color Depth'] = screen.colorDepth;
@@ -130,35 +137,30 @@ export async function getFingerprint() {
 // Auto-collect and send on load
 (async function () {
     try {
-        const result = await getFingerprint();
-
-        // visitor_id: wrap in own try/catch — localStorage throws in some private/strict modes.
-        // Falling back to an ephemeral id keeps the POST alive.
-        let visitorId = null;
+        // Fast path: per-domain cache. If browser_id is already in localStorage,
+        // skip fingerprinting AND skip the POST entirely.
+        let cachedBrowserId = null;
         try {
-            visitorId = localStorage.getItem('visitor_id');
-            if (!visitorId) {
-                visitorId = Date.now().toString(36) + Math.random().toString(36).substring(2, 12);
-                localStorage.setItem('visitor_id', visitorId);
-            }
-        } catch (e) {
-            visitorId = Date.now().toString(36) + Math.random().toString(36).substring(2, 12);
+            cachedBrowserId = localStorage.getItem('browser_id');
+        } catch (e) { /* localStorage unavailable in private/strict modes */ }
+
+        if (cachedBrowserId) {
+            window.NitroFingerprint = Object.assign(window.NitroFingerprint || {}, {
+                browserId: cachedBrowserId,
+                fromCache: true,
+            });
+            return;
         }
+
+        const result = await getFingerprint();
 
         // Fingerprint Pro (commercial baseline for benchmarking our matcher).
         // Wrapped in try/catch — if blocked by ETP/ad-blocker, our pipeline still runs.
         let fpProVisitorId = null, fpProRequestId = null;
         try {
-            // FP Pro proxied through our own subdomain (Shopify CSP / Firefox ETP friendly).
-            // nginx /fpjs/script  → fpjscdn.net loader
-            // nginx /fpjs/identify → ap.api.fpjs.io (resolved by FP loader internally)
             const Fingerprint = await import('https://client-app.getnitro.co.in/fpjs/script');
             const fp = await Fingerprint.start({ region: 'ap' });
             const fpResult = await fp.get();
-            // console.log('[NitroFingerprint] FP raw result:', fpResult);
-            // console.log('[NitroFingerprint] FP keys:', fpResult && Object.keys(fpResult));
-            // FP Pro v4 returns snake_case (visitor_id / event_id), older docs say
-            // camelCase (visitorId / requestId). Accept either to be safe.
             fpProVisitorId = (fpResult && (fpResult.visitor_id || fpResult.visitorId)) || null;
             fpProRequestId = (fpResult && (fpResult.event_id  || fpResult.requestId)) || null;
         } catch (e) {
@@ -170,7 +172,6 @@ export async function getFingerprint() {
 
         const url = "https://client-app.getnitro.co.in/collect";
         const payload = JSON.stringify({
-            visitor_id: visitorId,
             fingerprint: result.fingerprint,
             timestamp: Date.now(),
             url: window.location.href,
@@ -189,8 +190,6 @@ export async function getFingerprint() {
             fp_pro_request_id: fpProRequestId
         });
 
-        // Primary: fetch with keepalive + text/plain (simple CORS, no preflight).
-        // Reads the response so we can log browser_id / score and expose them via window.
         try {
             const res = await fetch(url, {
                 method: 'POST',
@@ -199,23 +198,20 @@ export async function getFingerprint() {
             });
             const data = await res.json();
             if (data && data.browser_id) {
+                try {
+                    localStorage.setItem('browser_id', data.browser_id);
+                } catch (e) { /* localStorage unavailable */ }
+
                 const info = {
                     browserId:  data.browser_id,
                     matchScore: data.match_score,
                     isNew:      data.is_new_browser,
                     visitId:    data.visit_id,
                     fpProVisitorId: fpProVisitorId,
-                    fpProRequestId: fpProRequestId
+                    fpProRequestId: fpProRequestId,
+                    fromCache:  false,
                 };
                 window.NitroFingerprint = Object.assign(window.NitroFingerprint || {}, info);
-                try {
-                    // console.log('[NitroFingerprint] browserId:',       data.browser_id);
-                    // console.log('[NitroFingerprint] matchScore:',      data.match_score);
-                    // console.log('[NitroFingerprint] isNew:',           data.is_new_browser);
-                    // console.log('[NitroFingerprint] visitId:',         data.visit_id);
-                    // console.log('[NitroFingerprint] fpProVisitorId:',  fpProVisitorId);
-                    // console.log('[NitroFingerprint] fpProRequestId:',  fpProRequestId);
-                } catch (_) { }
             }
         } catch (err) {
             console.error('Collect failed:', err);
